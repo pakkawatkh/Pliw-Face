@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+.build_dmg/
+.swiftpm/
+.venv/
+*.app
+*.dmg
+*.zip
+*.mlmodelc/
+!docs/*.dmg
+!docs/*.zip
+xcuserdata/
