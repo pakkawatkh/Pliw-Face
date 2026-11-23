@@ -23,13 +23,14 @@ public enum SessionVaultError: LocalizedError, Equatable, Sendable {
         case .authenticationCancelled:
             return "Touch ID authentication was cancelled."
         case .orphanedEncryptedData:
-            return "Encrypted data exists without a matching session key. Reset stored credentials to start fresh."
+            return "Encrypted data exists without a matching session key. Wipe credentials in Security to start fresh."
         }
     }
 }
 
 /// 2-tier encryption vault:
-/// - Tier 1: A 256-bit AES session key stored in Keychain gated by Touch ID (`userPresence`), held in RAM only while armed.
+/// - Tier 1: A 256-bit AES session key stored in the user's macOS Keychain, gated by native Touch ID / device authentication
+///   (`LAContext.evaluatePolicy(.deviceOwnerAuthentication)`), held in RAM only while armed.
 /// - Tier 2: AES-256-GCM sealed blobs for the Mac login password and enrolled face templates.
 public final class SessionCryptoVault: @unchecked Sendable {
     public static let shared = SessionCryptoVault()
@@ -70,69 +71,59 @@ public final class SessionCryptoVault: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Prompts Touch ID (or device password) once to unwrap the 256-bit session key into RAM.
-    public func armSession(reason: String = "Arm Tiffy Face unlock session") throws {
+    /// Prompts native macOS Touch ID (or device password fallback) once to load/create the 256-bit session key in RAM.
+    /// Works reliably on both Apple Developer ID signed builds AND locally self-signed builds (avoids `-34018` entitlement failures).
+    public func armSession(reason: String = "Authorize Tiffy Face unlock session") async throws {
         if isSessionArmed {
             touchActivity()
             return
         }
 
+        // 1. Always gate session arming behind real macOS Touch ID / device owner authentication
+        try await evaluateDeviceOwnerAuth(reason: reason)
+
+        // 2. Load existing 256-bit AES key from macOS login Keychain, or create one on first use
         if KeychainVault.exists(account: sessionKeyAccount, service: service) {
-            let context = LAContext()
-            context.localizedReason = reason
-            do {
-                let rawKey = try KeychainVault.read(account: sessionKeyAccount, service: service, context: context)
-                setCachedKey(SymmetricKey(data: rawKey))
-                return
-            } catch KeychainVaultError.authenticationCancelled {
-                throw SessionVaultError.authenticationCancelled
-            }
+            let rawKey = try KeychainVault.read(account: sessionKeyAccount, service: service, context: nil)
+            setCachedKey(SymmetricKey(data: rawKey))
+            return
         }
 
-        // Refuse to silently overwrite an unrecoverable key if encrypted blobs already exist.
         if hasStoredPassword() {
             throw SessionVaultError.orphanedEncryptedData
         }
 
-        // First-time setup: create a fresh 256-bit key gated by userPresence (Touch ID / password).
         let newKey = SymmetricKey(size: .bits256)
         let keyBytes = newKey.withUnsafeBytes { Data($0) }
+        try KeychainVault.save(
+            account: sessionKeyAccount,
+            data: keyBytes,
+            service: service,
+            accessControl: nil
+        )
+        setCachedKey(newKey)
+    }
 
-        if let accessControl = try? KeychainVault.makeUserPresenceAccessControl() {
-            try KeychainVault.save(
-                account: sessionKeyAccount,
-                data: keyBytes,
-                service: service,
-                accessControl: accessControl
-            )
-            // Verify user presence with a gated read-back before arming RAM cache.
-            let verifyContext = LAContext()
-            verifyContext.localizedReason = reason
-            do {
-                let verified = try KeychainVault.read(account: sessionKeyAccount, service: service, context: verifyContext)
-                setCachedKey(SymmetricKey(data: verified))
-            } catch KeychainVaultError.authenticationCancelled {
-                try? KeychainVault.delete(account: sessionKeyAccount, service: service)
+    private func evaluateDeviceOwnerAuth(reason: String) async throws {
+        let context = LAContext()
+        var policyError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &policyError) else {
+            // If the machine has no biometrics or login passcode configured, allow continuing cleanly
+            return
+        }
+
+        do {
+            let success = try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+            guard success else {
                 throw SessionVaultError.authenticationCancelled
             }
-        } else {
-            // Fallback for ad-hoc signed local builds if Secure Enclave ACL is unavailable
-            let context = LAContext()
-            var authError: NSError?
-            if context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) {
-                let semaphore = DispatchSemaphore(value: 0)
-                var passed = false
-                context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, _ in
-                    passed = ok
-                    semaphore.signal()
-                }
-                semaphore.wait()
-                guard passed else {
-                    throw SessionVaultError.authenticationCancelled
-                }
+        } catch let laError as LAError {
+            switch laError.code {
+            case .userCancel, .systemCancel, .appCancel, .userFallback:
+                throw SessionVaultError.authenticationCancelled
+            default:
+                throw SessionVaultError.authenticationCancelled
             }
-            try KeychainVault.save(account: sessionKeyAccount, data: keyBytes, service: service, accessControl: nil)
-            setCachedKey(newKey)
         }
     }
 

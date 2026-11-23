@@ -27,35 +27,59 @@ public struct SetupWindowView: View {
     public init() {}
 
     public var body: some View {
-        VStack(spacing: 0) {
-            topHeader
-                .padding(.top, 28)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 12)
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                topHeader
+                    .padding(.top, 28)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 12)
 
-            tabPicker
-                .padding(.horizontal, 20)
-                .padding(.bottom, 12)
+                tabPicker
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 12)
 
-            Divider().background(.white.opacity(0.08))
+                Divider().background(.white.opacity(0.08))
 
-            ScrollView {
-                Group {
-                    switch selectedTab {
-                    case .enroll:
-                        enrollmentTab
-                    case .security:
-                        securityTab
-                    case .lab:
-                        faceLabTab
+                ScrollView {
+                    Group {
+                        switch selectedTab {
+                        case .enroll:
+                            enrollmentTab
+                        case .security:
+                            securityTab
+                        case .lab:
+                            faceLabTab
+                        }
                     }
+                    .padding(20)
                 }
-                .padding(20)
+            }
+
+            if let toast = engine.toastMessage {
+                HStack(spacing: 7) {
+                    Image(systemName: engine.isToastError ? "exclamationmark.triangle.fill" : "checkmark.shield.fill")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(engine.isToastError ? .orange : Color(red: 0.32, green: 0.92, blue: 0.80))
+                    Text(toast)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color(red: 0.10, green: 0.13, blue: 0.19).opacity(0.96))
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 1))
+                .shadow(color: .black.opacity(0.45), radius: 10, y: 4)
+                .padding(.bottom, 16)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .allowsHitTesting(false)
             }
         }
         .frame(width: 540, height: 570)
         .background(Color(red: 0.07, green: 0.08, blue: 0.11))
         .preferredColorScheme(.dark)
+        .animation(.easeInOut(duration: 0.2), value: engine.toastMessage)
         .onChange(of: selectedTab) { newTab in
             if newTab != .lab && engine.runMode == .diagnosticScan {
                 engine.stopAnyActiveScan()

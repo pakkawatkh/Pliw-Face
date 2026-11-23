@@ -36,7 +36,10 @@ public final class FastCameraCapture: NSObject, AVCaptureVideoDataOutputSampleBu
         await AVCaptureDevice.requestAccess(for: .video)
     }
 
-    public func start(onFrame: @escaping (CVPixelBuffer, TimeInterval) -> Void) {
+    public func start(
+        onFrame: @escaping (CVPixelBuffer, TimeInterval) -> Void,
+        onError: ((String) -> Void)? = nil
+    ) {
         callbackLock.lock()
         frameHandler = onFrame
         callbackLock.unlock()
@@ -44,7 +47,10 @@ public final class FastCameraCapture: NSObject, AVCaptureVideoDataOutputSampleBu
         sessionQueue.async { [weak self] in
             guard let self else { return }
             if !self.isConfigured {
-                self.configureSessionLocked()
+                if let errorMsg = self.configureSessionLocked() {
+                    onError?(errorMsg)
+                    return
+                }
             }
             if self.isConfigured && !self.session.isRunning {
                 self.session.startRunning()
@@ -65,7 +71,7 @@ public final class FastCameraCapture: NSObject, AVCaptureVideoDataOutputSampleBu
         }
     }
 
-    private func configureSessionLocked() {
+    private func configureSessionLocked() -> String? {
         session.beginConfiguration()
         defer { session.commitConfiguration() }
 
@@ -76,10 +82,19 @@ public final class FastCameraCapture: NSObject, AVCaptureVideoDataOutputSampleBu
             session.sessionPreset = .medium
         }
 
-        guard let device = AVCaptureDevice.default(for: .video),
-              let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input) else {
-            return
+        guard let device = AVCaptureDevice.default(for: .video) else {
+            return "No webcam found on this Mac."
+        }
+
+        let input: AVCaptureDeviceInput
+        do {
+            input = try AVCaptureDeviceInput(device: device)
+        } catch {
+            return "Unable to open camera: \(error.localizedDescription)"
+        }
+
+        guard session.canAddInput(input) else {
+            return "Unable to attach camera input."
         }
         session.addInput(input)
 
@@ -90,9 +105,12 @@ public final class FastCameraCapture: NSObject, AVCaptureVideoDataOutputSampleBu
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: frameQueue)
 
-        guard session.canAddOutput(output) else { return }
+        guard session.canAddOutput(output) else {
+            return "Unable to attach camera video output."
+        }
         session.addOutput(output)
         isConfigured = true
+        return nil
     }
 
     public func captureOutput(

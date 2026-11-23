@@ -65,6 +65,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         self.setupWindow = window
     }
 
+    public func windowDidBecomeKey(_ notification: Notification) {
+        FaceUnlockEngine.shared.refreshSystemReadiness()
+    }
+
     public func windowWillClose(_ notification: Notification) {
         let engine = FaceUnlockEngine.shared
         if engine.runMode == .diagnosticScan {

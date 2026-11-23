@@ -21,6 +21,7 @@ public struct CameraPreviewNSView: NSViewRepresentable {
         if nsView.previewLayer.session !== session {
             nsView.previewLayer.session = session
         }
+        nsView.updateMirroring()
     }
 
     public final class PreviewHostView: NSView {
@@ -28,8 +29,10 @@ public struct CameraPreviewNSView: NSViewRepresentable {
 
         public override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
-            wantsLayer = true
+            // Layer-hosting order in AppKit: assign `layer` BEFORE setting `wantsLayer = true`
             layer = previewLayer
+            wantsLayer = true
+            previewLayer.frame = bounds
         }
 
         @available(*, unavailable)
@@ -39,7 +42,14 @@ public struct CameraPreviewNSView: NSViewRepresentable {
 
         public override func layout() {
             super.layout()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             previewLayer.frame = bounds
+            CATransaction.commit()
+            updateMirroring()
+        }
+
+        public func updateMirroring() {
             if let connection = previewLayer.connection, connection.isVideoMirroringSupported {
                 connection.automaticallyAdjustsVideoMirroring = false
                 connection.isVideoMirrored = true

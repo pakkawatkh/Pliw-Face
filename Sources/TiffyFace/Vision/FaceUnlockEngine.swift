@@ -161,9 +161,7 @@ public final class FaceUnlockEngine: ObservableObject {
     public func armSession() {
         Task { @MainActor in
             do {
-                try await Task.detached(priority: .userInitiated) { [vault] in
-                    try vault.armSession(reason: "Authorize Tiffy Face unlock session")
-                }.value
+                try await vault.armSession(reason: "Authorize Tiffy Face unlock session")
                 isSessionArmed = vault.isSessionArmed
                 reloadIdentities()
                 startIdleSessionTimer()
@@ -196,9 +194,7 @@ public final class FaceUnlockEngine: ObservableObject {
                 defer { bytes.resetBytes(in: 0..<bytes.count) }
 
                 if !vault.isSessionArmed {
-                    try await Task.detached(priority: .userInitiated) { [vault] in
-                        try vault.armSession(reason: "Encrypt and store Mac login password")
-                    }.value
+                    try await vault.armSession(reason: "Encrypt and store Mac login password")
                 }
                 let copy = bytes
                 try await Task.detached(priority: .userInitiated) { [vault] in
@@ -339,33 +335,47 @@ public final class FaceUnlockEngine: ObservableObject {
     }
 
     public func startDiagnosticScan() {
-        guard cameraAccess.isAuthorized else {
-            requestCameraPermission()
-            return
+        refreshSystemReadiness()
+        Task { @MainActor in
+            if !cameraAccess.isAuthorized {
+                let granted = await FastCameraCapture.requestAccess()
+                refreshSystemReadiness()
+                guard granted else {
+                    showToast("Enable Camera in System Settings → Privacy & Security → Camera", isError: true)
+                    return
+                }
+            }
+            stopAnyActiveScan()
+            beginScan(mode: .diagnosticScan, timeout: nil)
         }
-        stopAnyActiveScan()
-        beginScan(mode: .diagnosticScan, timeout: nil)
     }
 
     public func startEnrollment(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let label = trimmed.isEmpty ? "Primary Face" : trimmed
 
-        guard cameraAccess.isAuthorized else {
-            requestCameraPermission()
-            return
-        }
+        refreshSystemReadiness()
 
         Task { @MainActor in
+            if !cameraAccess.isAuthorized {
+                let granted = await FastCameraCapture.requestAccess()
+                refreshSystemReadiness()
+                guard granted else {
+                    showToast("Enable Camera in System Settings → Privacy & Security → Camera", isError: true)
+                    return
+                }
+            }
+
             if !vault.isSessionArmed {
                 do {
-                    try await Task.detached(priority: .userInitiated) { [vault] in
-                        try vault.armSession(reason: "Authorize face enrollment")
-                    }.value
+                    try await vault.armSession(reason: "Authorize Tiffy Face enrollment")
                     refreshSystemReadiness()
                     startIdleSessionTimer()
+                } catch SessionVaultError.authenticationCancelled {
+                    showToast("Touch ID cancelled — enrollment stopped", isError: false)
+                    return
                 } catch {
-                    showToast("Touch ID authorization required to enroll face", isError: true)
+                    showToast("Keychain error: \(error.localizedDescription)", isError: true)
                     return
                 }
             }
@@ -414,16 +424,24 @@ public final class FaceUnlockEngine: ObservableObject {
         let activeSettings = settings
         let activeEmbedder = embedder
 
-        camera.start { [weak self] pixelBuffer, timestamp in
-            self?.enqueueFrame(
-                pixelBuffer: pixelBuffer,
-                timestamp: timestamp,
-                mode: mode,
-                identities: activeIdentities,
-                settings: activeSettings,
-                embedder: activeEmbedder
-            )
-        }
+        camera.start(
+            onFrame: { [weak self] pixelBuffer, timestamp in
+                self?.enqueueFrame(
+                    pixelBuffer: pixelBuffer,
+                    timestamp: timestamp,
+                    mode: mode,
+                    identities: activeIdentities,
+                    settings: activeSettings,
+                    embedder: activeEmbedder
+                )
+            },
+            onError: { [weak self] errorMessage in
+                Task { @MainActor [weak self] in
+                    self?.stopAnyActiveScan()
+                    self?.showToast(errorMessage, isError: true)
+                }
+            }
+        )
 
         if let timeout {
             scanTimeoutTask?.cancel()
@@ -510,9 +528,9 @@ public final class FaceUnlockEngine: ObservableObject {
             return
         }
 
-        // Early-exit frame gatekeeper: drop dark/blurry camera warm-up frames before running Core ML!
+        // Early-exit frame gatekeeper: drop pitch-black camera warm-up frames while remaining responsive in dim night lighting
         let quality = (qualityReq.results?.first?.faceCaptureQuality) ?? 0.35
-        guard quality >= 0.18 else {
+        guard quality >= 0.12 else {
             return
         }
 
@@ -635,9 +653,9 @@ public final class FaceUnlockEngine: ObservableObject {
         let allPoses = EnrollmentPose.allCases
         guard poseIndex < allPoses.count else { return }
 
-        // Require sharp frame and brief pause between poses so user naturally shifts angle
+        // Require usable frame quality and a brief pause between poses so the user naturally shifts angle
         let now = ProcessInfo.processInfo.systemUptime
-        guard quality >= 0.28, now - lastEnrollmentCaptureUptime >= 0.65 else { return }
+        guard quality >= 0.16, now - lastEnrollmentCaptureUptime >= 0.75 else { return }
 
         let pose = allPoses[poseIndex]
         enrollmentTemplates.append(EnrolledFaceTemplate(pose: pose, vector: vector, qualityScore: quality))

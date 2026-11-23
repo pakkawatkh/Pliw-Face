@@ -166,6 +166,23 @@ final class TiffyFaceTests: XCTestCase {
         XCTAssertThrowsError(try store.load())
     }
 
+    func testKeychainVaultLiveSaveReadDeleteWithoutEntitlementError() throws {
+        let testService = "com.local.tiffy-face.keychain-test.\(UUID().uuidString)"
+        let account = "test_aes_key"
+        defer { try? KeychainVault.delete(account: account, service: testService) }
+
+        let payload = Data("0123456789abcdef0123456789abcdef".utf8)
+        XCTAssertFalse(KeychainVault.exists(account: account, service: testService))
+        try KeychainVault.save(account: account, data: payload, service: testService, accessControl: nil)
+        XCTAssertTrue(KeychainVault.exists(account: account, service: testService))
+
+        let loaded = try KeychainVault.read(account: account, service: testService, context: nil)
+        XCTAssertEqual(loaded, payload)
+
+        try KeychainVault.delete(account: account, service: testService)
+        XCTAssertFalse(KeychainVault.exists(account: account, service: testService))
+    }
+
     // MARK: - 5. Keystroke UTF-16 Surrogate-Safe Chunking
 
     func testUTF16ChunkingNeverSplitsSurrogatePairs() {
