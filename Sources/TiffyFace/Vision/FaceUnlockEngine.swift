@@ -3,6 +3,7 @@ import Combine
 import CoreVideo
 import Foundation
 import Vision
+import os
 
 public enum EngineRunMode: Equatable, Sendable {
     case idle
@@ -55,6 +56,7 @@ private final class FramePipelineGate: @unchecked Sendable {
 @MainActor
 public final class FaceUnlockEngine: ObservableObject {
     public static let shared = FaceUnlockEngine()
+    private static let log = Logger(subsystem: "com.local.tiffy-face", category: "Engine")
 
     @Published public var settings: FaceSettings {
         didSet {
@@ -327,7 +329,9 @@ public final class FaceUnlockEngine: ObservableObject {
     }
 
     private func handleSpacebarWhileLocked() {
-        guard settings.unlockOnSpacebar, LockScreenMonitor.isScreenActuallyLocked() else { return }
+        let locked = LockScreenMonitor.isScreenActuallyLocked()
+        Self.log.info("Spacebar callback: unlockOnSpacebar=\(self.settings.unlockOnSpacebar) locked=\(locked) armed=\(self.isSessionArmed)")
+        guard settings.unlockOnSpacebar, locked else { return }
         triggerLockScreenScanIfEligible(manualTrigger: true)
     }
 
@@ -341,14 +345,22 @@ public final class FaceUnlockEngine: ObservableObject {
             return
         }
 
-        guard runMode == .idle else { return }
-        guard isReadyForLockScreenUnlock else { return }
+        refreshSystemReadiness()
+        guard runMode == .idle else {
+            Self.log.info("Skip scan: runMode not idle")
+            return
+        }
+        guard isReadyForLockScreenUnlock else {
+            Self.log.warning("Skip scan: not ready (enabled=\(self.settings.isEnabled) armed=\(self.isSessionArmed) pw=\(self.hasStoredPassword) faces=\(self.enabledIdentitiesForCurrentModel.count) cam=\(self.cameraAccess.isAuthorized) ax=\(self.accessibilityTrusted))")
+            return
+        }
         guard LockScreenMonitor.isScreenActuallyLocked() else { return }
 
         let now = ProcessInfo.processInfo.systemUptime
         let cooldown: TimeInterval = manualTrigger ? 0.6 : 2.2
         guard now - lastUnlockAttemptUptime >= cooldown else { return }
 
+        Self.log.info("Starting Lock Screen face scan (manual=\(manualTrigger))")
         beginScan(mode: .lockScreenUnlock, timeout: settings.scanTimeoutSeconds)
     }
 

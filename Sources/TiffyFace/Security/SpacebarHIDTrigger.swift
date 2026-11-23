@@ -1,11 +1,15 @@
 import AppKit
+import ApplicationServices
 import Foundation
 import IOKit.hid
+import os
 
 /// Lightweight IOHIDManager listener active ONLY while the Mac is locked so tapping Spacebar triggers a face rescan
 /// even while macOS Secure Event Input suppresses CGEventTap. Zero overhead when unlocked.
 @MainActor
 public final class SpacebarHIDTrigger {
+    private static let log = Logger(subsystem: "com.local.tiffy-face", category: "SpacebarHID")
+
     public var onSpacePressed: (() -> Void)?
 
     private var manager: IOHIDManager?
@@ -13,16 +17,14 @@ public final class SpacebarHIDTrigger {
 
     public init() {}
 
+    /// On macOS, Accessibility permission satisfies HID keyboard listening even when `IOHIDCheckAccess` reports unknown.
     public nonisolated static func isInputMonitoringGranted() -> Bool {
-        IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+        IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted || AXIsProcessTrusted()
     }
 
-    /// Requests macOS Input Monitoring permission for Spacebar detection on the Lock Screen.
-    /// If already denied, opens System Settings directly to Privacy & Security → Input Monitoring.
     @discardableResult
     public nonisolated static func requestInputMonitoringAccess() -> Bool {
-        let current = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
-        if current == kIOHIDAccessTypeGranted {
+        if isInputMonitoringGranted() {
             return true
         }
         let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
@@ -41,36 +43,26 @@ public final class SpacebarHIDTrigger {
 
     public func startListening() {
         guard manager == nil else { return }
-        guard Self.isInputMonitoringGranted() else {
-            return
-        }
 
         let hidManager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
 
-        // Match physical keyboards (built-in MacBook keyboard + external USB/Bluetooth keyboards)
+        // Match physical keyboards (built-in MacBook SPI keyboard + external USB/Bluetooth keyboards)
         let keyboardMatch: [String: Int] = [
             kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop,
             kIOHIDDeviceUsageKey: kHIDUsage_GD_Keyboard,
         ]
         IOHIDManagerSetDeviceMatching(hidManager, keyboardMatch as CFDictionary)
 
-        // Kernel-side element filter: wake callback ONLY for Spacebar (Usage Page 0x07, Usage 0x2C)
-        let spacebarMatch: [String: Int] = [
-            kIOHIDElementUsagePageKey: kHIDPage_KeyboardOrKeypad,
-            kIOHIDElementUsageKey: 0x2C,
-        ]
-        IOHIDManagerSetInputValueMatching(hidManager, spacebarMatch as CFDictionary)
-
+        // Filter Spacebar inside the callback (avoiding IOHIDManagerSetInputValueMatching which drops
+        // events on Apple Silicon internal SPI keyboards).
         let context = Unmanaged.passUnretained(self).toOpaque()
         IOHIDManagerRegisterInputValueCallback(hidManager, { context, _, _, value in
             guard let context else { return }
             let element = IOHIDValueGetElement(value)
-            let usagePage = IOHIDElementGetUsagePage(element)
-            let usage = IOHIDElementGetUsage(element)
-            let pressed = IOHIDValueGetIntegerValue(value)
-
-            // HID Keyboard Usage Page 0x07, Spacebar = 0x2C, keyDown = 1
-            guard usagePage == kHIDPage_KeyboardOrKeypad, usage == 0x2C, pressed == 1 else {
+            guard IOHIDElementGetUsagePage(element) == UInt32(kHIDPage_KeyboardOrKeypad),
+                  IOHIDElementGetUsage(element) == UInt32(kHIDUsage_KeyboardSpacebar),
+                  IOHIDValueGetIntegerValue(value) == 1
+            else {
                 return
             }
 
@@ -81,10 +73,14 @@ public final class SpacebarHIDTrigger {
         }, context)
 
         IOHIDManagerScheduleWithRunLoop(hidManager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+
+        // Let IOHIDManagerOpen itself act as ground truth for HID access
         let status = IOHIDManagerOpen(hidManager, IOOptionBits(kIOHIDOptionsTypeNone))
         if status == kIOReturnSuccess {
             self.manager = hidManager
+            Self.log.info("IOHIDManagerOpen succeeded — listening for Spacebar on Lock Screen")
         } else {
+            Self.log.error("IOHIDManagerOpen failed with status 0x\(String(status, radix: 16), privacy: .public)")
             IOHIDManagerUnscheduleFromRunLoop(hidManager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
         }
     }
@@ -94,12 +90,14 @@ public final class SpacebarHIDTrigger {
         manager = nil
         IOHIDManagerUnscheduleFromRunLoop(hidManager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
         IOHIDManagerClose(hidManager, IOOptionBits(kIOHIDOptionsTypeNone))
+        Self.log.info("Stopped Spacebar HID listener")
     }
 
     private func handleSpaceDown() {
         let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastTriggerTime > 0.8 else { return }
+        guard now - lastTriggerTime > 0.7 else { return }
         lastTriggerTime = now
+        Self.log.info("Spacebar pressed on Lock Screen — triggering scan")
         onSpacePressed?()
     }
 }
