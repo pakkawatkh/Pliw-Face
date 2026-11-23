@@ -350,6 +350,14 @@ public struct SetupWindowView: View {
                     buttonTitle: "Open Settings",
                     action: { engine.requestAccessibilityPermission() }
                 )
+                Divider().background(.white.opacity(0.07))
+                permissionRow(
+                    title: "Input Monitoring (Spacebar)",
+                    subtitle: "Lets you tap Spacebar on the Lock Screen (after ⌃⌘Q) to scan immediately",
+                    granted: engine.inputMonitoringGranted,
+                    buttonTitle: "Grant",
+                    action: { engine.requestInputMonitoringPermission() }
+                )
             }
 
             sectionCard(title: "Mac Login Password (AES-256-GCM + Touch ID)") {

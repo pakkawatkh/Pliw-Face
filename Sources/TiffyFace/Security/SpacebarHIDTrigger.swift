@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import IOKit.hid
 
@@ -12,18 +13,53 @@ public final class SpacebarHIDTrigger {
 
     public init() {}
 
+    public nonisolated static func isInputMonitoringGranted() -> Bool {
+        IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+    }
+
+    /// Requests macOS Input Monitoring permission for Spacebar detection on the Lock Screen.
+    /// If already denied, opens System Settings directly to Privacy & Security → Input Monitoring.
+    @discardableResult
+    public nonisolated static func requestInputMonitoringAccess() -> Bool {
+        let current = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
+        if current == kIOHIDAccessTypeGranted {
+            return true
+        }
+        let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+        if !granted,
+           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+            DispatchQueue.main.async {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        return granted
+    }
+
+    public var isListening: Bool {
+        manager != nil
+    }
+
     public func startListening() {
         guard manager == nil else { return }
-        guard IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else {
+        guard Self.isInputMonitoringGranted() else {
             return
         }
 
         let hidManager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+
+        // Match physical keyboards (built-in MacBook keyboard + external USB/Bluetooth keyboards)
         let keyboardMatch: [String: Int] = [
             kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop,
             kIOHIDDeviceUsageKey: kHIDUsage_GD_Keyboard,
         ]
         IOHIDManagerSetDeviceMatching(hidManager, keyboardMatch as CFDictionary)
+
+        // Kernel-side element filter: wake callback ONLY for Spacebar (Usage Page 0x07, Usage 0x2C)
+        let spacebarMatch: [String: Int] = [
+            kIOHIDElementUsagePageKey: kHIDPage_KeyboardOrKeypad,
+            kIOHIDElementUsageKey: 0x2C,
+        ]
+        IOHIDManagerSetInputValueMatching(hidManager, spacebarMatch as CFDictionary)
 
         let context = Unmanaged.passUnretained(self).toOpaque()
         IOHIDManagerRegisterInputValueCallback(hidManager, { context, _, _, value in
@@ -62,7 +98,7 @@ public final class SpacebarHIDTrigger {
 
     private func handleSpaceDown() {
         let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastTriggerTime > 1.2 else { return }
+        guard now - lastTriggerTime > 0.8 else { return }
         lastTriggerTime = now
         onSpacePressed?()
     }

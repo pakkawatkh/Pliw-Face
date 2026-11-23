@@ -69,6 +69,7 @@ public final class FaceUnlockEngine: ObservableObject {
     @Published public private(set) var hasStoredPassword: Bool = false
     @Published public private(set) var cameraAccess: CameraAccessState = .notDetermined
     @Published public private(set) var accessibilityTrusted: Bool = false
+    @Published public private(set) var inputMonitoringGranted: Bool = false
     @Published public private(set) var lastUnlockLatencyMs: Int? = nil
     @Published public private(set) var enrollmentCompletedPoses: [EnrollmentPose] = []
     @Published public private(set) var toastMessage: String? = nil
@@ -132,6 +133,7 @@ public final class FaceUnlockEngine: ObservableObject {
         hasStoredPassword = vault.hasStoredPassword()
         cameraAccess = FastCameraCapture.authorizationState()
         accessibilityTrusted = LockScreenKeystrokeDriver.isAccessibilityTrusted()
+        inputMonitoringGranted = SpacebarHIDTrigger.isInputMonitoringGranted()
 
         if isSessionArmed {
             reloadIdentities()
@@ -150,6 +152,14 @@ public final class FaceUnlockEngine: ObservableObject {
 
     public func requestAccessibilityPermission() {
         LockScreenKeystrokeDriver.requestAccessibilityPrompt()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            refreshSystemReadiness()
+        }
+    }
+
+    public func requestInputMonitoringPermission() {
+        _ = SpacebarHIDTrigger.requestInputMonitoringAccess()
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 800_000_000)
             refreshSystemReadiness()
@@ -281,6 +291,13 @@ public final class FaceUnlockEngine: ObservableObject {
         case .locked:
             if settings.unlockOnSpacebar {
                 spacebarTrigger.startListening()
+                if !spacebarTrigger.isListening {
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        guard let self, self.settings.unlockOnSpacebar, LockScreenMonitor.isScreenActuallyLocked() else { return }
+                        self.spacebarTrigger.startListening()
+                    }
+                }
             }
             guard settings.unlockOnLock, !lockMonitor.isSleeping else { return }
             Task { @MainActor [weak self] in
@@ -311,12 +328,12 @@ public final class FaceUnlockEngine: ObservableObject {
 
     private func handleSpacebarWhileLocked() {
         guard settings.unlockOnSpacebar, LockScreenMonitor.isScreenActuallyLocked() else { return }
-        triggerLockScreenScanIfEligible()
+        triggerLockScreenScanIfEligible(manualTrigger: true)
     }
 
     // MARK: - Scan Control (Lock Screen / Diagnostic / Enrollment)
 
-    public func triggerLockScreenScanIfEligible() {
+    public func triggerLockScreenScanIfEligible(manualTrigger: Bool = false) {
         // Enforce idle timeout before attempting any unlock
         if vault.enforceIdleTimeout(settings.sessionTimeout.timeInterval) {
             isSessionArmed = false
@@ -329,7 +346,8 @@ public final class FaceUnlockEngine: ObservableObject {
         guard LockScreenMonitor.isScreenActuallyLocked() else { return }
 
         let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastUnlockAttemptUptime >= 2.2 else { return }
+        let cooldown: TimeInterval = manualTrigger ? 0.6 : 2.2
+        guard now - lastUnlockAttemptUptime >= cooldown else { return }
 
         beginScan(mode: .lockScreenUnlock, timeout: settings.scanTimeoutSeconds)
     }
