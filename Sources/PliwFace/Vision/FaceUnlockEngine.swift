@@ -71,10 +71,10 @@ public final class FaceUnlockEngine: ObservableObject {
     @Published public private(set) var hasStoredPassword: Bool = false
     @Published public private(set) var cameraAccess: CameraAccessState = .notDetermined
     @Published public private(set) var accessibilityTrusted: Bool = false
-    @Published public private(set) var inputMonitoringGranted: Bool = false
     @Published public private(set) var isKeychainUnlockVerified: Bool = false
     @Published public private(set) var lastUnlockLatencyMs: Int? = nil
     @Published public private(set) var enrollmentCompletedPoses: [EnrollmentPose] = []
+    @Published public private(set) var isEnrollmentPoseAligned: Bool = false
     @Published public private(set) var toastMessage: String? = nil
     @Published public private(set) var isToastError: Bool = false
     @Published public private(set) var isScreenLocked: Bool = false
@@ -85,7 +85,6 @@ public final class FaceUnlockEngine: ObservableObject {
     private let warper = FaceWarper()
     private let liveness = StreamingLivenessDetector()
     private let lockMonitor = LockScreenMonitor()
-    private let spacebarTrigger = SpacebarHIDTrigger()
     private let notchHoverTrigger = NotchHoverTrigger()
     private let vault: SessionCryptoVault
     private let identityStore: FaceIdentityStore
@@ -102,6 +101,7 @@ public final class FaceUnlockEngine: ObservableObject {
     // Enrollment scratch state (main actor only)
     private var enrollmentTemplates: [EnrolledFaceTemplate] = []
     private var lastEnrollmentCaptureUptime: TimeInterval = 0
+    private var enrollmentAlignedStreak: Int = 0
 
     public init(
         vault: SessionCryptoVault = .shared,
@@ -142,7 +142,6 @@ public final class FaceUnlockEngine: ObservableObject {
         hasStoredPassword = vault.hasStoredPassword()
         cameraAccess = FastCameraCapture.authorizationState()
         accessibilityTrusted = LockScreenKeystrokeDriver.isAccessibilityTrusted()
-        inputMonitoringGranted = SpacebarHIDTrigger.isInputMonitoringGranted()
 
         if isSessionArmed {
             reloadIdentities()
@@ -161,14 +160,6 @@ public final class FaceUnlockEngine: ObservableObject {
 
     public func requestAccessibilityPermission() {
         LockScreenKeystrokeDriver.requestAccessibilityPrompt()
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            refreshSystemReadiness()
-        }
-    }
-
-    public func requestInputMonitoringPermission() {
-        _ = SpacebarHIDTrigger.requestInputMonitoringAccess()
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 800_000_000)
             refreshSystemReadiness()
@@ -299,20 +290,14 @@ public final class FaceUnlockEngine: ObservableObject {
     public func startBackgroundMonitoring() {
         lockMonitor.start()
         isScreenLocked = LockScreenMonitor.isScreenActuallyLocked()
-        if isScreenLocked {
-            if settings.unlockOnSpacebar {
-                spacebarTrigger.startListening()
-            }
-            if settings.unlockOnNotchHover {
-                notchHoverTrigger.startListening()
-            }
+        if isScreenLocked && settings.unlockOnNotchHover {
+            notchHoverTrigger.startListening()
         }
     }
 
     public func stopBackgroundMonitoring() {
         stopAnyActiveScan()
         lockMonitor.stop()
-        spacebarTrigger.stopListening()
         notchHoverTrigger.stopListening()
         isScreenLocked = false
         stopIdleSessionTimer()
@@ -321,9 +306,6 @@ public final class FaceUnlockEngine: ObservableObject {
     private func configureMonitors() {
         lockMonitor.onEvent = { [weak self] event in
             self?.handleLockEvent(event)
-        }
-        spacebarTrigger.onSpacePressed = { [weak self] in
-            self?.handleSpacebarWhileLocked()
         }
         notchHoverTrigger.onNotchHovered = { [weak self] in
             self?.handleNotchHoverWhileLocked()
@@ -334,37 +316,19 @@ public final class FaceUnlockEngine: ObservableObject {
         switch event {
         case .willSleep:
             stopAnyActiveScan()
-            spacebarTrigger.stopListening()
             notchHoverTrigger.stopListening()
 
         case .locked:
+            phase = .idle
             isScreenLocked = true
-            if settings.unlockOnSpacebar {
-                spacebarTrigger.startListening()
-                if !spacebarTrigger.isListening {
-                    Task { @MainActor [weak self] in
-                        try? await Task.sleep(nanoseconds: 350_000_000)
-                        guard let self, self.settings.unlockOnSpacebar, LockScreenMonitor.isScreenActuallyLocked() else { return }
-                        self.spacebarTrigger.startListening()
-                    }
-                }
-            }
             if settings.unlockOnNotchHover {
                 notchHoverTrigger.startListening()
-            }
-            guard settings.unlockOnLock, !lockMonitor.isSleeping else { return }
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                self?.triggerLockScreenScanIfEligible()
             }
 
         case .wokeUp:
             let locked = LockScreenMonitor.isScreenActuallyLocked()
             isScreenLocked = locked
             if locked {
-                if settings.unlockOnSpacebar {
-                    spacebarTrigger.startListening()
-                }
                 if settings.unlockOnNotchHover {
                     notchHoverTrigger.startListening()
                 }
@@ -378,19 +342,11 @@ public final class FaceUnlockEngine: ObservableObject {
 
         case .unlocked:
             isScreenLocked = false
-            spacebarTrigger.stopListening()
             notchHoverTrigger.stopListening()
             if runMode == .lockScreenUnlock {
                 stopAnyActiveScan()
             }
         }
-    }
-
-    private func handleSpacebarWhileLocked() {
-        let locked = LockScreenMonitor.isScreenActuallyLocked()
-        Self.log.info("Spacebar callback: unlockOnSpacebar=\(self.settings.unlockOnSpacebar) locked=\(locked) armed=\(self.isSessionArmed)")
-        guard settings.unlockOnSpacebar, locked else { return }
-        triggerLockScreenScanIfEligible(manualTrigger: true)
     }
 
     public func handleNotchHoverWhileLocked() {
@@ -482,16 +438,26 @@ public final class FaceUnlockEngine: ObservableObject {
             enrollmentTemplates = []
             enrollmentCompletedPoses = []
             lastEnrollmentCaptureUptime = 0
+            enrollmentAlignedStreak = 0
+            isEnrollmentPoseAligned = false
             beginScan(mode: .enrollment(name: label, poseIndex: 0), timeout: nil)
         }
     }
 
     public func stopAnyActiveScan() {
+        stopCameraPreservingPhase()
+        phase = .idle
+    }
+
+    /// Stops camera and scan timers without resetting `phase` to `.idle` so the Notch HUD
+    /// transitions seamlessly from `.scanning` -> `.unlocked` (green check) -> `.hidden` in one motion.
+    private func stopCameraPreservingPhase() {
         scanTimeoutTask?.cancel()
         scanTimeoutTask = nil
         camera.stop()
         runMode = .idle
-        phase = .idle
+        isEnrollmentPoseAligned = false
+        enrollmentAlignedStreak = 0
         frameGate.resetCounter()
         liveness.reset()
     }
@@ -546,7 +512,7 @@ public final class FaceUnlockEngine: ObservableObject {
             scanTimeoutTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
                 guard !Task.isCancelled, let self, self.runMode == .lockScreenUnlock else { return }
-                self.stopAnyActiveScan()
+                self.stopCameraPreservingPhase()
                 self.phase = .rejected("Scan timed out")
             }
         }
@@ -657,6 +623,7 @@ public final class FaceUnlockEngine: ObservableObject {
             : false
         let geo = StreamingLivenessDetector.extractGeometryCues(from: face)
         let yaw = face.yaw?.floatValue ?? 0
+        let pitch = face.pitch?.floatValue ?? 0
 
         let sample = LivenessFrameSample(
             timestamp: timestamp,
@@ -686,7 +653,9 @@ public final class FaceUnlockEngine: ObservableObject {
                 inferMs: inferMs,
                 sample: sample,
                 match: match,
-                frameNumber: localFrameNum
+                frameNumber: localFrameNum,
+                yaw: yaw,
+                pitch: pitch
             )
         }
     }
@@ -697,7 +666,9 @@ public final class FaceUnlockEngine: ObservableObject {
         inferMs: Double,
         sample: LivenessFrameSample,
         match: (identity: FaceIdentity, score: Float)?,
-        frameNumber: Int
+        frameNumber: Int,
+        yaw: Float,
+        pitch: Float
     ) {
         guard runMode != .idle else { return }
 
@@ -733,7 +704,9 @@ public final class FaceUnlockEngine: ObservableObject {
                 name: name,
                 poseIndex: poseIndex,
                 vector: vector,
-                quality: quality
+                quality: quality,
+                yaw: yaw,
+                pitch: pitch
             )
 
         case .lockScreenUnlock:
@@ -746,16 +719,28 @@ public final class FaceUnlockEngine: ObservableObject {
         name: String,
         poseIndex: Int,
         vector: [Float],
-        quality: Float
+        quality: Float,
+        yaw: Float,
+        pitch: Float
     ) {
         let allPoses = EnrollmentPose.allCases
         guard poseIndex < allPoses.count else { return }
 
-        // Require usable frame quality and a brief pause between poses so the user naturally shifts angle
-        let now = ProcessInfo.processInfo.systemUptime
-        guard quality >= 0.16, now - lastEnrollmentCaptureUptime >= 0.55 else { return }
-
         let pose = allPoses[poseIndex]
+        let aligned = pose.matches(yaw: yaw, pitch: pitch) && quality >= 0.20
+        isEnrollmentPoseAligned = aligned
+
+        guard aligned else {
+            enrollmentAlignedStreak = 0
+            return
+        }
+
+        enrollmentAlignedStreak += 1
+        let now = ProcessInfo.processInfo.systemUptime
+        guard enrollmentAlignedStreak >= 2, now - lastEnrollmentCaptureUptime >= 0.45 else { return }
+
+        enrollmentAlignedStreak = 0
+        isEnrollmentPoseAligned = false
         enrollmentTemplates.append(EnrolledFaceTemplate(pose: pose, vector: vector, qualityScore: quality))
         enrollmentCompletedPoses.append(pose)
         lastEnrollmentCaptureUptime = now
@@ -795,7 +780,7 @@ public final class FaceUnlockEngine: ObservableObject {
         elapsedMs: Double
     ) {
         if case .spoofDetected(let reason) = livenessEval.verdict {
-            stopAnyActiveScan()
+            stopCameraPreservingPhase()
             phase = .rejected("Blocked: \(reason)")
             return
         }
@@ -816,7 +801,7 @@ public final class FaceUnlockEngine: ObservableObject {
         }
 
         lastUnlockAttemptUptime = ProcessInfo.processInfo.systemUptime
-        stopAnyActiveScan()
+        stopCameraPreservingPhase()
 
         let matchedName = match.identity.name
         let latencyMs = Int(elapsedMs.rounded())
@@ -837,6 +822,11 @@ public final class FaceUnlockEngine: ObservableObject {
                     self?.phase = .unlocked(identityName: matchedName, latencyMs: latencyMs)
                     if useHaptics {
                         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+                    }
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        guard let self, case .unlocked = self.phase else { return }
+                        self.phase = .idle
                     }
                 }
             } catch KeystrokeDriverError.screenNoLongerLocked {

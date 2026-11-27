@@ -274,14 +274,32 @@ public struct SetupWindowView: View {
 
                 ZStack {
                     // 36 radial Face ID ticks like iPhone Face ID setup
+                    let activeTargetAngle: Double? = {
+                        if case .enrollment(_, let poseIndex) = engine.runMode,
+                           poseIndex < EnrollmentPose.allCases.count {
+                            return EnrollmentPose.allCases[poseIndex].directionAngleDegrees
+                        }
+                        return nil
+                    }()
+
                     ForEach(0..<36, id: \.self) { idx in
                         let fraction = Double(idx) / 36.0
-                        let active = fraction < progress
+                        let completed = fraction < progress
+                        let tickDeg = Double(idx) * 10.0
+                        let isTargetSegment: Bool = {
+                            guard let target = activeTargetAngle else { return false }
+                            let diff = abs(((tickDeg - target + 540).truncatingRemainder(dividingBy: 360)) - 180)
+                            return diff <= 15.0
+                        }()
                         Capsule()
-                            .fill(active ? Self.iosGreen : Color.white.opacity(0.14))
-                            .frame(width: 2.6, height: active ? 11 : 8)
+                            .fill(
+                                completed
+                                    ? Self.iosGreen
+                                    : (isTargetSegment ? Color.white.opacity(0.92) : Color.white.opacity(0.14))
+                            )
+                            .frame(width: isTargetSegment ? 3.2 : 2.6, height: (completed || isTargetSegment) ? 12 : 8)
                             .offset(y: -86)
-                            .rotationEffect(.degrees(Double(idx) * 10.0))
+                            .rotationEffect(.degrees(tickDeg))
                     }
                     .animation(.easeOut(duration: 0.22), value: progress)
 
@@ -311,10 +329,10 @@ public struct SetupWindowView: View {
                    poseIndex < EnrollmentPose.allCases.count {
                     let pose = EnrollmentPose.allCases[poseIndex]
                     VStack(spacing: 3) {
-                        Text(pose.instruction)
+                        Text(engine.isEnrollmentPoseAligned ? "Hold steady…" : pose.instruction)
                             .font(.system(size: 13.5, weight: .semibold))
-                            .foregroundStyle(Self.iosGreen)
-                        Text("Pose \(poseIndex + 1) of \(EnrollmentPose.allCases.count) • Quality \(Int(engine.telemetry.faceQuality * 100))%")
+                            .foregroundStyle(engine.isEnrollmentPoseAligned ? Self.iosGreen : .white)
+                        Text("Pose \(poseIndex + 1) of \(EnrollmentPose.allCases.count) (\(pose.shortLabel)) • Quality \(Int(engine.telemetry.faceQuality * 100))%")
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.54))
                     }
@@ -490,27 +508,9 @@ public struct SetupWindowView: View {
                 )
                 Divider().background(.white.opacity(0.07))
                 toggleRow(
-                    title: "Tap Spacebar to Rescan",
-                    subtitle: "Press Spacebar on the Lock Screen to trigger a new scan",
-                    isOn: $engine.settings.unlockOnSpacebar
-                )
-                Divider().background(.white.opacity(0.07))
-                toggleRow(
-                    title: "Hover Notch to Rescan",
-                    subtitle: "Move the cursor onto the notch after a failed scan to retry",
+                    title: "Hover or Click Notch to Rescan",
+                    subtitle: "Move the cursor onto or click the notch after a failed scan to retry",
                     isOn: $engine.settings.unlockOnNotchHover
-                )
-                Divider().background(.white.opacity(0.07))
-                toggleRow(
-                    title: "Unlock Immediately on Lock",
-                    subtitle: "Begin scanning right away after pressing ⌃⌘Q",
-                    isOn: $engine.settings.unlockOnLock
-                )
-                Divider().background(.white.opacity(0.07))
-                toggleRow(
-                    title: "Trackpad Haptic Feedback",
-                    subtitle: "Subtle tactile click on unlock and notch hover",
-                    isOn: $engine.settings.hapticFeedback
                 )
                 Divider().background(.white.opacity(0.07))
                 HStack {
@@ -549,14 +549,6 @@ public struct SetupWindowView: View {
                     granted: engine.accessibilityTrusted,
                     buttonTitle: "Open Settings",
                     action: { engine.requestAccessibilityPermission() }
-                )
-                Divider().background(.white.opacity(0.07))
-                permissionRow(
-                    title: "Input Monitoring",
-                    subtitle: "Detects Spacebar taps on the Lock Screen",
-                    granted: engine.inputMonitoringGranted,
-                    buttonTitle: "Grant",
-                    action: { engine.requestInputMonitoringPermission() }
                 )
                 Divider().background(.white.opacity(0.07))
                 permissionRow(

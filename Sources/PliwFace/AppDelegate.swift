@@ -52,11 +52,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         }
 
         Task { @MainActor [weak self] in
+            self?.notchHUDController?.showTouchIDScanning()
             do {
                 try await SessionCryptoVault.shared.authenticateOwner(reason: "Authenticate to open Pliw Face Settings")
             } catch {
+                self?.notchHUDController?.cancelTouchID()
                 return
             }
+            self?.notchHUDController?.showTouchIDUnlocked()
             self?.presentSetupWindowAuthorized()
         }
     }

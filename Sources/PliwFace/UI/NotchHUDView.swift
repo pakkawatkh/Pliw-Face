@@ -1,11 +1,16 @@
 import AppKit
 import SwiftUI
 
+public enum AuthVisualKind: Equatable, Sendable {
+    case faceID
+    case touchID
+}
+
 public enum NotchHUDDisplayState: Equatable, Sendable {
     case hidden
     case lockedIdle
-    case scanning(faceDetected: Bool, quality: Float)
-    case unlocked(identityName: String, latencyMs: Int)
+    case scanning(faceDetected: Bool, quality: Float, kind: AuthVisualKind = .faceID)
+    case unlocked(identityName: String, latencyMs: Int, kind: AuthVisualKind = .faceID)
     case rejected(reason: String, isSpoof: Bool)
 
     public var isHidden: Bool {
@@ -190,6 +195,7 @@ public struct NotchHUDView: View {
     private static let iosGreen = Color(red: 0.188, green: 0.820, blue: 0.345) // #30D158
     private static let iosRed = Color(red: 1.000, green: 0.271, blue: 0.227)   // #FF453A
     private static let iosAmber = Color(red: 1.000, green: 0.624, blue: 0.039) // #FF9F0A
+    private static let iosPink = Color(red: 1.000, green: 0.216, blue: 0.373)  // #FF375F (Touch ID)
 
     private var isActiveState: Bool {
         switch model.state {
@@ -219,7 +225,10 @@ public struct NotchHUDView: View {
         switch model.state {
         case .hidden, .lockedIdle:
             return .white.opacity(0.75)
-        case .scanning(let faceDetected, _):
+        case .scanning(let faceDetected, _, let kind):
+            if kind == .touchID {
+                return Self.iosPink
+            }
             return faceDetected ? Self.iosGreen : .white
         case .unlocked:
             return Self.iosGreen
@@ -250,10 +259,9 @@ public struct NotchHUDView: View {
             switch model.state {
             case .hidden:
                 return hasNotch ? max(0, baseW - 2) : 110
-            case .lockedIdle:
-                return hasNotch ? (baseW + 64 + earComp) : 132
-            case .scanning, .unlocked, .rejected:
-                return hasNotch ? (baseW + 96 + earComp) : 168
+            case .lockedIdle, .scanning, .unlocked, .rejected:
+                // Exact same width across Standby, Scanning, Retry, and Unlocked so icons never jump!
+                return hasNotch ? (baseW + 84 + earComp) : 160
             }
 
         case .dynamicIsland:
@@ -434,16 +442,23 @@ public struct NotchHUDView: View {
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.white.opacity(0.55))
 
-        case .scanning(let faceDetected, _):
+        case .scanning(let faceDetected, _, let kind):
             TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let pulse = 0.90 + 0.10 * sin(t * 4.5)
-                let yawDeg = sin(t * 2.4) * (faceDetected ? 6.0 : 16.0)
-                Image(systemName: "faceid")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundStyle(faceDetected ? Self.iosGreen : .white)
-                    .scaleEffect(pulse)
-                    .rotation3DEffect(.degrees(yawDeg), axis: (x: 0, y: 1, z: 0))
+                if kind == .touchID {
+                    Image(systemName: "touchid")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(Self.iosPink)
+                        .scaleEffect(pulse)
+                } else {
+                    let yawDeg = sin(t * 2.4) * (faceDetected ? 6.0 : 16.0)
+                    Image(systemName: "faceid")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(faceDetected ? Self.iosGreen : .white)
+                        .scaleEffect(pulse)
+                        .rotation3DEffect(.degrees(yawDeg), axis: (x: 0, y: 1, z: 0))
+                }
             }
 
         case .unlocked:
@@ -513,19 +528,33 @@ private struct IOSFaceIDGlyphView: View {
 
     var body: some View {
         switch state {
-        case .scanning(let faceDetected, _):
+        case .scanning(let faceDetected, _, let kind):
             TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
-                let breath = 0.96 + 0.04 * sin(t * 3.6)
-                let yawDeg = sin(t * 2.0) * (faceDetected ? 5.0 : 14.0)
-                let pitchDeg = cos(t * 1.5) * (faceDetected ? 3.0 : 7.0)
+                let breath = 0.95 + 0.05 * sin(t * 3.6)
 
-                Image(systemName: "faceid")
-                    .font(.system(size: 42, weight: .light))
-                    .foregroundStyle(accentColor)
-                    .scaleEffect(faceDetected ? 0.96 : breath)
-                    .rotation3DEffect(.degrees(yawDeg), axis: (x: 0, y: 1, z: 0))
-                    .rotation3DEffect(.degrees(pitchDeg), axis: (x: 1, y: 0, z: 0))
+                if kind == .touchID {
+                    ZStack {
+                        Circle()
+                            .stroke(accentColor.opacity(0.24), lineWidth: 2.2)
+                            .scaleEffect(0.92 + 0.08 * sin(t * 3.6))
+                            .padding(2)
+                        Image(systemName: "touchid")
+                            .font(.system(size: 38, weight: .light))
+                            .foregroundStyle(accentColor)
+                            .scaleEffect(breath)
+                    }
+                } else {
+                    let yawDeg = sin(t * 2.0) * (faceDetected ? 5.0 : 14.0)
+                    let pitchDeg = cos(t * 1.5) * (faceDetected ? 3.0 : 7.0)
+
+                    Image(systemName: "faceid")
+                        .font(.system(size: 42, weight: .light))
+                        .foregroundStyle(accentColor)
+                        .scaleEffect(faceDetected ? 0.96 : breath)
+                        .rotation3DEffect(.degrees(yawDeg), axis: (x: 0, y: 1, z: 0))
+                        .rotation3DEffect(.degrees(pitchDeg), axis: (x: 1, y: 0, z: 0))
+                }
             }
 
         case .unlocked:

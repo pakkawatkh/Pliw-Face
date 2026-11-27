@@ -30,6 +30,10 @@ private final class NotchHoverHostingView: NSHostingView<NotchHUDView> {
     override func mouseEntered(with event: NSEvent) {
         onHoverEntered?()
     }
+
+    override func mouseDown(with event: NSEvent) {
+        onHoverEntered?()
+    }
 }
 
 /// Controls the Glance-style Dynamic Island / Notch Face ID HUD `NSPanel`.
@@ -47,11 +51,44 @@ public final class NotchHUDController {
     private var retractTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var isHoldingFeedback = false
+    private var isTouchIDPromptActive = false
+    private var wasScreenLocked = false
+    private var lastHandledTerminalPhase: UnlockPhase?
 
     public init(engine: FaceUnlockEngine? = nil) {
         let resolved = engine ?? .shared
         self.engine = resolved
+        self.wasScreenLocked = resolved.isScreenLocked
         observe(engine: resolved)
+    }
+
+    public func showTouchIDScanning() {
+        guard engine?.settings.showNotchHUD ?? true else { return }
+        previewTask?.cancel()
+        retractTask?.cancel()
+        isTouchIDPromptActive = true
+        isHoldingFeedback = false
+        if let style = engine?.settings.hudStyle {
+            model.style = style
+        }
+        presentState(.scanning(faceDetected: false, quality: 0, kind: .touchID))
+    }
+
+    public func showTouchIDUnlocked() {
+        guard isTouchIDPromptActive || (engine?.settings.showNotchHUD ?? true) else { return }
+        isTouchIDPromptActive = false
+        isHoldingFeedback = true
+        if let style = engine?.settings.hudStyle {
+            model.style = style
+        }
+        presentState(.unlocked(identityName: "Touch ID", latencyMs: 0, kind: .touchID))
+        scheduleRetract(after: 0.75)
+    }
+
+    public func cancelTouchID() {
+        guard isTouchIDPromptActive else { return }
+        isTouchIDPromptActive = false
+        retractImmediately()
     }
 
     public func teardown() {
@@ -144,9 +181,25 @@ public final class NotchHUDController {
         model.style = settings.hudStyle
 
         guard settings.showNotchHUD else {
-            if !isHoldingFeedback && previewTask == nil {
+            wasScreenLocked = isScreenLocked
+            if !isHoldingFeedback && previewTask == nil && !isTouchIDPromptActive {
                 retractImmediately()
             }
+            return
+        }
+
+        // If user unlocked the Lock Screen externally (e.g. Touch ID) while Face ID was scanning,
+        // smoothly complete with a Touch ID unlock confirmation instead of snapping away.
+        let unlockedExternally = wasScreenLocked && !isScreenLocked
+        wasScreenLocked = isScreenLocked
+        if unlockedExternally, case .scanning(_, _, .faceID) = model.state {
+            isHoldingFeedback = true
+            presentState(.unlocked(identityName: "Touch ID", latencyMs: 0, kind: .touchID))
+            scheduleRetract(after: 0.75)
+            return
+        }
+
+        if isTouchIDPromptActive {
             return
         }
 
@@ -155,20 +208,25 @@ public final class NotchHUDController {
         switch phase {
         case .warmingCamera, .scanning:
             guard eligibleMode else { return }
+            lastHandledTerminalPhase = nil
             previewTask?.cancel()
             previewTask = nil
             retractTask?.cancel()
             isHoldingFeedback = false
-            presentState(.scanning(faceDetected: telemetry.faceDetected, quality: telemetry.faceQuality))
+            presentState(.scanning(faceDetected: telemetry.faceDetected, quality: telemetry.faceQuality, kind: .faceID))
 
         case .unlocked(let identityName, let latencyMs):
+            guard lastHandledTerminalPhase != phase else { return }
+            lastHandledTerminalPhase = phase
             previewTask?.cancel()
             previewTask = nil
             isHoldingFeedback = true
-            presentState(.unlocked(identityName: identityName, latencyMs: latencyMs))
+            presentState(.unlocked(identityName: identityName, latencyMs: latencyMs, kind: .faceID))
             scheduleRetract(after: 0.85)
 
         case .rejected(let reason), .failed(let reason):
+            guard lastHandledTerminalPhase != phase else { return }
+            lastHandledTerminalPhase = phase
             previewTask?.cancel()
             previewTask = nil
             isHoldingFeedback = true
@@ -176,6 +234,7 @@ public final class NotchHUDController {
             scheduleRetract(after: 1.25)
 
         case .idle:
+            lastHandledTerminalPhase = nil
             if !isHoldingFeedback && previewTask == nil {
                 if isScreenLocked && settings.unlockOnNotchHover && (engine?.isReadyForLockScreenUnlock ?? false) {
                     presentState(.lockedIdle)

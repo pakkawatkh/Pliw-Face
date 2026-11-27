@@ -40,6 +40,46 @@ public enum EnrollmentPose: String, CaseIterable, Codable, Identifiable, Sendabl
         case .downRight: return "Down-Right"
         }
     }
+
+    /// Target clock-face angle in degrees (0° = top / 12 o'clock, clockwise) for UI directional guidance.
+    public var directionAngleDegrees: Double? {
+        switch self {
+        case .center: return nil
+        case .slightUp: return 0
+        case .upRight: return 45
+        case .slightRight: return 90
+        case .downRight: return 135
+        case .slightDown: return 180
+        case .downLeft: return 225
+        case .slightLeft: return 270
+        case .upLeft: return 315
+        }
+    }
+
+    /// Verifies whether Apple Vision `VNFaceObservation` head pose (`yaw` and `pitch` in radians)
+    /// matches this target enrollment angle so enrollment waits for real 3D head turns.
+    public func matches(yaw: Float, pitch: Float) -> Bool {
+        switch self {
+        case .center:
+            return abs(yaw) <= 0.14 && abs(pitch) <= 0.14
+        case .slightLeft:
+            return yaw >= 0.17 && abs(pitch) <= 0.20
+        case .slightRight:
+            return yaw <= -0.17 && abs(pitch) <= 0.20
+        case .slightUp:
+            return pitch <= -0.10 && abs(yaw) <= 0.20
+        case .slightDown:
+            return pitch >= 0.10 && abs(yaw) <= 0.20
+        case .upLeft:
+            return yaw >= 0.14 && pitch <= -0.08
+        case .upRight:
+            return yaw <= -0.14 && pitch <= -0.08
+        case .downLeft:
+            return yaw >= 0.14 && pitch >= 0.08
+        case .downRight:
+            return yaw <= -0.14 && pitch >= 0.08
+        }
+    }
 }
 
 public struct EnrolledFaceTemplate: Codable, Equatable, Sendable {

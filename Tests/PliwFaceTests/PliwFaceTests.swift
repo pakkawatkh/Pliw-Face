@@ -285,6 +285,22 @@ final class PliwFaceTests: XCTestCase {
     func testNineAngleEnrollmentPoses() {
         XCTAssertEqual(EnrollmentPose.allCases.count, 9)
         XCTAssertEqual(Set(EnrollmentPose.allCases.map(\.rawValue)).count, 9)
+
+        // Looking straight ahead must ONLY match .center (never auto-advance left/right/up/down/diagonals)
+        XCTAssertTrue(EnrollmentPose.center.matches(yaw: 0.0, pitch: 0.0))
+        for nonCenter in EnrollmentPose.allCases where nonCenter != .center {
+            XCTAssertFalse(nonCenter.matches(yaw: 0.0, pitch: 0.0), "\(nonCenter) should not match neutral gaze")
+        }
+
+        // Turning into each target angle should match that specific pose
+        XCTAssertTrue(EnrollmentPose.slightLeft.matches(yaw: 0.25, pitch: 0.0))
+        XCTAssertTrue(EnrollmentPose.slightRight.matches(yaw: -0.25, pitch: 0.0))
+        XCTAssertTrue(EnrollmentPose.slightUp.matches(yaw: 0.0, pitch: -0.15))
+        XCTAssertTrue(EnrollmentPose.slightDown.matches(yaw: 0.0, pitch: 0.15))
+        XCTAssertTrue(EnrollmentPose.upLeft.matches(yaw: 0.20, pitch: -0.14))
+        XCTAssertTrue(EnrollmentPose.upRight.matches(yaw: -0.20, pitch: -0.14))
+        XCTAssertTrue(EnrollmentPose.downLeft.matches(yaw: 0.20, pitch: 0.14))
+        XCTAssertTrue(EnrollmentPose.downRight.matches(yaw: -0.20, pitch: 0.14))
     }
 
     func testAutoArmFromKeychainIfAvailableLoadsStoredKey() throws {
