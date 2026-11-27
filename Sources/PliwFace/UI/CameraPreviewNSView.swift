@@ -3,31 +3,42 @@ import AppKit
 import SwiftUI
 
 /// Hardware-accelerated `AVCaptureVideoPreviewLayer` wrapper for Enrollment & Live Face Lab.
-public struct CameraPreviewNSView: NSViewRepresentable {
+/// Forces deterministic selfie mirroring via SwiftUI center-anchored horizontal flip while
+/// disabling inconsistent AVFoundation per-camera auto-mirroring.
+public struct CameraPreviewNSView: View {
     public let session: AVCaptureSession
 
     public init(session: AVCaptureSession) {
         self.session = session
     }
 
-    public func makeNSView(context: Context) -> PreviewHostView {
+    public var body: some View {
+        RawCameraPreviewRepresentable(session: session)
+            .scaleEffect(x: -1, y: 1)
+    }
+}
+
+private struct RawCameraPreviewRepresentable: NSViewRepresentable {
+    let session: AVCaptureSession
+
+    func makeNSView(context: Context) -> PreviewHostView {
         let view = PreviewHostView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
         return view
     }
 
-    public func updateNSView(_ nsView: PreviewHostView, context: Context) {
+    func updateNSView(_ nsView: PreviewHostView, context: Context) {
         if nsView.previewLayer.session !== session {
             nsView.previewLayer.session = session
         }
-        nsView.updateMirroring()
+        nsView.disableConnectionMirroring()
     }
 
-    public final class PreviewHostView: NSView {
-        public let previewLayer = AVCaptureVideoPreviewLayer()
+    final class PreviewHostView: NSView {
+        let previewLayer = AVCaptureVideoPreviewLayer()
 
-        public override init(frame frameRect: NSRect) {
+        override init(frame frameRect: NSRect) {
             super.init(frame: frameRect)
             // Layer-hosting order in AppKit: assign `layer` BEFORE setting `wantsLayer = true`
             layer = previewLayer
@@ -40,19 +51,19 @@ public struct CameraPreviewNSView: NSViewRepresentable {
             fatalError("init(coder:) has not been implemented")
         }
 
-        public override func layout() {
+        override func layout() {
             super.layout()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             previewLayer.frame = bounds
             CATransaction.commit()
-            updateMirroring()
+            disableConnectionMirroring()
         }
 
-        public func updateMirroring() {
+        func disableConnectionMirroring() {
             if let connection = previewLayer.connection, connection.isVideoMirroringSupported {
                 connection.automaticallyAdjustsVideoMirroring = false
-                connection.isVideoMirrored = true
+                connection.isVideoMirrored = false
             }
         }
     }

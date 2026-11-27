@@ -86,6 +86,7 @@ public struct FaceSettings: Codable, Equatable, Sendable {
     public var hudStyle: NotchHUDStyle
     public var unlockOnNotchHover: Bool
     public var autoArmOnLaunch: Bool
+    public var launchAtLoginPreferred: Bool
 
     public init(
         isEnabled: Bool = true,
@@ -100,7 +101,8 @@ public struct FaceSettings: Codable, Equatable, Sendable {
         showNotchHUD: Bool = true,
         hudStyle: NotchHUDStyle = .notchWings,
         unlockOnNotchHover: Bool = true,
-        autoArmOnLaunch: Bool = true
+        autoArmOnLaunch: Bool = true,
+        launchAtLoginPreferred: Bool = true
     ) {
         self.isEnabled = isEnabled
         self.unlockOnWake = unlockOnWake
@@ -115,6 +117,7 @@ public struct FaceSettings: Codable, Equatable, Sendable {
         self.hudStyle = hudStyle
         self.unlockOnNotchHover = unlockOnNotchHover
         self.autoArmOnLaunch = autoArmOnLaunch
+        self.launchAtLoginPreferred = launchAtLoginPreferred
     }
 
     public init(from decoder: Decoder) throws {
@@ -132,6 +135,7 @@ public struct FaceSettings: Codable, Equatable, Sendable {
         self.hudStyle = try c.decodeIfPresent(NotchHUDStyle.self, forKey: .hudStyle) ?? .notchWings
         self.unlockOnNotchHover = try c.decodeIfPresent(Bool.self, forKey: .unlockOnNotchHover) ?? true
         self.autoArmOnLaunch = try c.decodeIfPresent(Bool.self, forKey: .autoArmOnLaunch) ?? true
+        self.launchAtLoginPreferred = try c.decodeIfPresent(Bool.self, forKey: .launchAtLoginPreferred) ?? true
     }
 
     private static let storageKey = "com.local.pliw-face.settings.v1"

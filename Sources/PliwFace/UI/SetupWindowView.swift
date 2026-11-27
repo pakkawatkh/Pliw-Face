@@ -4,9 +4,8 @@ import SwiftUI
 
 public enum SetupTab: String, CaseIterable, Identifiable {
     case faceID = "Face ID"
-    case triggers = "Notch & Triggers"
+    case triggers = "Notch"
     case security = "Security"
-    case diagnostics = "Diagnostics"
 
     public var id: String { rawValue }
 
@@ -15,16 +14,6 @@ public enum SetupTab: String, CaseIterable, Identifiable {
         case .faceID: return "faceid"
         case .triggers: return "sparkles"
         case .security: return "lock.shield"
-        case .diagnostics: return "waveform.path.ecg"
-        }
-    }
-
-    public var subtitle: String {
-        switch self {
-        case .faceID: return "Enroll faces and manage unlock readiness"
-        case .triggers: return "Dynamic Island HUD & lock-screen triggers"
-        case .security: return "macOS permissions, password & anti-spoofing"
-        case .diagnostics: return "Live Neural Engine & liveness telemetry"
         }
     }
 }
@@ -85,18 +74,12 @@ public struct SetupWindowView: View {
         .preferredColorScheme(.dark)
         .animation(.easeInOut(duration: 0.2), value: engine.toastMessage)
         .onChange(of: selectedTab) { newTab in
-            if newTab != .diagnostics && engine.runMode == .diagnosticScan {
-                engine.stopAnyActiveScan()
-            }
             if newTab != .faceID, case .enrollment = engine.runMode {
                 engine.stopAnyActiveScan()
             }
             engine.refreshSystemReadiness()
         }
         .onDisappear {
-            if engine.runMode == .diagnosticScan {
-                engine.stopAnyActiveScan()
-            }
             if case .enrollment = engine.runMode {
                 engine.stopAnyActiveScan()
             }
@@ -108,20 +91,11 @@ public struct SetupWindowView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [Self.iosGreen.opacity(0.85), Self.iosTeal],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    Image(systemName: "faceid")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 30, height: 30)
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 34, height: 34)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Pliw Face")
@@ -151,12 +125,14 @@ public struct SetupWindowView: View {
 
                             Spacer()
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7.5)
                         .background(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .fill(selectedTab == tab ? Color.white.opacity(0.12) : Color.clear)
                         )
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     }
                     .buttonStyle(.plain)
                 }
@@ -165,19 +141,13 @@ public struct SetupWindowView: View {
 
             Spacer()
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(engine.isReadyForLockScreenUnlock ? Self.iosGreen : .orange)
-                        .frame(width: 7, height: 7)
-                    Text(engine.isReadyForLockScreenUnlock ? "Ready to Unlock" : "Setup Incomplete")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-                Text(engine.embedder.displayName)
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.42))
-                    .lineLimit(1)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(engine.isReadyForLockScreenUnlock ? Self.iosGreen : .orange)
+                    .frame(width: 7, height: 7)
+                Text(engine.isReadyForLockScreenUnlock ? "Ready to Unlock" : "Setup Incomplete")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -192,17 +162,12 @@ public struct SetupWindowView: View {
 
     private var detailPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(selectedTab.rawValue)
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(.white)
-                Text(selectedTab.subtitle)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.white.opacity(0.50))
-            }
-            .padding(.top, 26)
-            .padding(.horizontal, 22)
-            .padding(.bottom, 14)
+            Text(selectedTab.rawValue)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.top, 26)
+                .padding(.horizontal, 22)
+                .padding(.bottom, 14)
 
             Divider().background(.white.opacity(0.08))
 
@@ -215,8 +180,6 @@ public struct SetupWindowView: View {
                         triggersTab
                     case .security:
                         securityTab
-                    case .diagnostics:
-                        diagnosticsTab
                     }
                 }
                 .padding(22)
@@ -238,18 +201,9 @@ public struct SetupWindowView: View {
                     .background((engine.isSessionArmed ? Self.iosGreen : Color.orange).opacity(0.14))
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(engine.isSessionArmed ? "Session Armed" : "Touch ID Required")
-                        .font(.system(size: 12.5, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(
-                        engine.isSessionArmed
-                            ? "Encrypted face profiles & login password are active in RAM."
-                            : "Authorize once with Touch ID to unlock encrypted face profiles."
-                    )
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.54))
-                }
+                Text(engine.isSessionArmed ? "Session Armed" : "Touch ID Required")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.white)
 
                 Spacer()
 
@@ -270,43 +224,68 @@ public struct SetupWindowView: View {
 
             // iPhone-style Circular Radial-Tick Enrollment
             VStack(spacing: 14) {
-                let progress = Double(engine.enrollmentCompletedPoses.count) / Double(EnrollmentPose.allCases.count)
+                let completedSet = Set(engine.enrollmentCompletedPoses)
+                let isEnrolling: Bool = {
+                    if case .enrollment = engine.runMode { return true }
+                    return false
+                }()
+                let centerCaptured = completedSet.contains(.center)
 
                 ZStack {
-                    // 36 radial Face ID ticks like iPhone Face ID setup
-                    let activeTargetAngle: Double? = {
-                        if case .enrollment(_, let poseIndex) = engine.runMode,
-                           poseIndex < EnrollmentPose.allCases.count {
-                            return EnrollmentPose.allCases[poseIndex].directionAngleDegrees
-                        }
-                        return nil
+                    // 36 radial Face ID ticks mapped spatially to each 22.5° outer head-turn sector
+                    let activeTargetAngle: Double? = isEnrolling ? engine.enrollmentGuidancePose.directionAngleDegrees : nil
+                    let liveHeadAngle: Double? = {
+                        guard isEnrolling, centerCaptured else { return nil }
+                        let pt = engine.enrollmentHeadPoint
+                        guard hypot(pt.x, pt.y) >= 0.35 else { return nil }
+                        var deg = atan2(pt.x, -pt.y) * 180.0 / .pi
+                        if deg < 0 { deg += 360.0 }
+                        return deg
                     }()
 
                     ForEach(0..<36, id: \.self) { idx in
-                        let fraction = Double(idx) / 36.0
-                        let completed = fraction < progress
                         let tickDeg = Double(idx) * 10.0
+                        let sectorPose = EnrollmentPose.outerPose(forClockDegrees: tickDeg)
+                        let completed = completedSet.contains(sectorPose)
+                        let isLiveGlow: Bool = {
+                            guard !completed, let headDeg = liveHeadAngle else { return false }
+                            let diff = abs(((tickDeg - headDeg + 540).truncatingRemainder(dividingBy: 360)) - 180)
+                            return diff <= 16.0
+                        }()
                         let isTargetSegment: Bool = {
-                            guard let target = activeTargetAngle else { return false }
+                            guard centerCaptured, !completed, let target = activeTargetAngle else { return false }
                             let diff = abs(((tickDeg - target + 540).truncatingRemainder(dividingBy: 360)) - 180)
-                            return diff <= 15.0
+                            return diff <= 12.0
                         }()
                         Capsule()
                             .fill(
                                 completed
                                     ? Self.iosGreen
-                                    : (isTargetSegment ? Color.white.opacity(0.92) : Color.white.opacity(0.14))
+                                    : (isLiveGlow
+                                        ? Color.white.opacity(0.92)
+                                        : (isTargetSegment ? Self.iosTeal.opacity(0.75) : Color.white.opacity(0.14)))
                             )
-                            .frame(width: isTargetSegment ? 3.2 : 2.6, height: (completed || isTargetSegment) ? 12 : 8)
+                            .frame(
+                                width: (completed || isLiveGlow) ? 3.2 : 2.6,
+                                height: completed ? 13 : (isLiveGlow ? 12.5 : (isTargetSegment ? 10.5 : 8))
+                            )
                             .offset(y: -86)
                             .rotationEffect(.degrees(tickDeg))
                     }
-                    .animation(.easeOut(duration: 0.22), value: progress)
+                    .animation(.easeOut(duration: 0.16), value: engine.enrollmentCompletedPoses.count)
+                    .animation(.easeOut(duration: 0.12), value: engine.enrollmentHeadPoint)
 
-                    if case .enrollment = engine.runMode {
+                    if isEnrolling {
                         CameraPreviewNSView(session: engine.camera.session)
                             .frame(width: 148, height: 148)
                             .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(
+                                        engine.isEnrollmentPoseAligned ? Self.iosGreen.opacity(0.85) : Color.white.opacity(0.14),
+                                        lineWidth: engine.isEnrollmentPoseAligned ? 2.2 : 1.2
+                                    )
+                            )
                     } else {
                         Circle()
                             .fill(.white.opacity(0.04))
@@ -316,7 +295,7 @@ public struct SetupWindowView: View {
                                     Image(systemName: "faceid")
                                         .font(.system(size: 36, weight: .light))
                                         .foregroundStyle(Self.iosGreen)
-                                    Text("9-Angle Setup")
+                                    Text("Setup")
                                         .font(.system(size: 11, weight: .medium))
                                         .foregroundStyle(.white.opacity(0.55))
                                 }
@@ -325,22 +304,30 @@ public struct SetupWindowView: View {
                 }
                 .frame(height: 186)
 
-                if case .enrollment(_, let poseIndex) = engine.runMode,
-                   poseIndex < EnrollmentPose.allCases.count {
-                    let pose = EnrollmentPose.allCases[poseIndex]
+                if isEnrolling {
+                    let capturedCount = completedSet.count
+                    let remainingOuter = EnrollmentPose.outerRingPoses.filter { !completedSet.contains($0) }
+                    let headline: String = {
+                        if !engine.telemetry.faceDetected {
+                            return "Position your face in the circle"
+                        }
+                        if !centerCaptured {
+                            return engine.isEnrollmentPoseAligned ? "Hold steady…" : EnrollmentPose.center.instruction
+                        }
+                        if remainingOuter.count > 3 {
+                            return engine.isEnrollmentPoseAligned ? "Great — keep moving slowly" : "Move your head slowly in a circle"
+                        }
+                        return engine.isEnrollmentPoseAligned ? "Hold steady…" : engine.enrollmentGuidancePose.instruction
+                    }()
+
                     VStack(spacing: 3) {
-                        Text(engine.isEnrollmentPoseAligned ? "Hold steady…" : pose.instruction)
+                        Text(headline)
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(engine.isEnrollmentPoseAligned ? Self.iosGreen : .white)
-                        Text("Pose \(poseIndex + 1) of \(EnrollmentPose.allCases.count) (\(pose.shortLabel)) • Quality \(Int(engine.telemetry.faceQuality * 100))%")
+                        Text("\(capturedCount) of \(EnrollmentPose.allCases.count) angles captured • Quality \(Int(engine.telemetry.faceQuality * 100))%")
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.54))
                     }
-                } else {
-                    Text("Frames are processed in RAM and immediately discarded. Only encrypted 512D embeddings are saved.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.50))
-                        .multilineTextAlignment(.center)
                 }
 
                 HStack(spacing: 10) {
@@ -392,14 +379,9 @@ public struct SetupWindowView: View {
                                 .font(.system(size: 16))
                                 .foregroundStyle(identity.isEnabled ? Self.iosGreen : .white.opacity(0.35))
 
-                            VStack(alignment: .leading, spacing: 1.5) {
-                                Text(identity.name)
-                                    .font(.system(size: 12.5, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                Text("\(identity.templates.count) angles • \(identity.embeddingDimension)D")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.45))
-                            }
+                            Text(identity.name)
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(.white)
 
                             Spacer()
 
@@ -432,21 +414,15 @@ public struct SetupWindowView: View {
             settingsGroup(title: "Dynamic Island / Notch HUD") {
                 toggleRow(
                     title: "Show Notch HUD Animation",
-                    subtitle: "Seamless pitch-black HUD blended into the MacBook notch",
                     isOn: $engine.settings.showNotchHUD
                 )
 
                 Divider().background(.white.opacity(0.07))
 
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("HUD Style")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.88))
-                        Text(engine.settings.hudStyle.summary)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.white.opacity(0.48))
-                    }
+                    Text("HUD Style")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.88))
                     Spacer()
                     Picker("", selection: $engine.settings.hudStyle) {
                         ForEach(NotchHUDStyle.allCases) { style in
@@ -460,14 +436,9 @@ public struct SetupWindowView: View {
                 Divider().background(.white.opacity(0.07))
 
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Preview Animation")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.88))
-                        Text("Test the selected HUD style right at your notch")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.white.opacity(0.48))
-                    }
+                    Text("Preview Animation")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.88))
                     Spacer()
                     Button("Preview Unlock") { onPreviewUnlockHUD() }
                         .buttonStyle(.borderedProminent)
@@ -482,10 +453,10 @@ public struct SetupWindowView: View {
             settingsGroup(title: "Startup & Lock Screen Triggers") {
                 toggleRow(
                     title: "Launch at Login",
-                    subtitle: "Start Pliw Face automatically whenever you log in to your Mac",
                     isOn: Binding(
                         get: { launchAtLogin },
                         set: { enabled in
+                            engine.settings.launchAtLoginPreferred = enabled
                             do {
                                 if enabled {
                                     try SMAppService.mainApp.register()
@@ -503,25 +474,18 @@ public struct SetupWindowView: View {
                 Divider().background(.white.opacity(0.07))
                 toggleRow(
                     title: "Unlock on Wake from Sleep",
-                    subtitle: "Automatically scan when opening the lid or waking the display",
                     isOn: $engine.settings.unlockOnWake
                 )
                 Divider().background(.white.opacity(0.07))
                 toggleRow(
                     title: "Hover or Click Notch to Rescan",
-                    subtitle: "Move the cursor onto or click the notch after a failed scan to retry",
                     isOn: $engine.settings.unlockOnNotchHover
                 )
                 Divider().background(.white.opacity(0.07))
                 HStack {
-                    VStack(alignment: .leading, spacing: 1.5) {
-                        Text("Scan Timeout: \(String(format: "%.1fs", engine.settings.scanTimeoutSeconds))")
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.88))
-                        Text("Stop camera and show failed state if no face matches in time")
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.white.opacity(0.48))
-                    }
+                    Text("Scan Timeout: \(String(format: "%.1fs", engine.settings.scanTimeoutSeconds))")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.88))
                     Spacer()
                     Slider(value: $engine.settings.scanTimeoutSeconds, in: 1.5...10.0, step: 0.5)
                         .frame(width: 155)
@@ -537,7 +501,6 @@ public struct SetupWindowView: View {
             settingsGroup(title: "macOS Permissions") {
                 permissionRow(
                     title: "Camera",
-                    subtitle: "Active only during Lock Screen unlock or enrollment",
                     granted: engine.cameraAccess.isAuthorized,
                     buttonTitle: "Grant",
                     action: { engine.requestCameraPermission() }
@@ -545,7 +508,6 @@ public struct SetupWindowView: View {
                 Divider().background(.white.opacity(0.07))
                 permissionRow(
                     title: "Accessibility",
-                    subtitle: "Submits your encrypted password on the Lock Screen",
                     granted: engine.accessibilityTrusted,
                     buttonTitle: "Open Settings",
                     action: { engine.requestAccessibilityPermission() }
@@ -553,22 +515,13 @@ public struct SetupWindowView: View {
                 Divider().background(.white.opacity(0.07))
                 permissionRow(
                     title: "Keychain Auto-Fill Access",
-                    subtitle: "Pre-authorize macOS Keychain ('Always Allow') so Lock Screen unlock never stalls",
                     granted: engine.isKeychainUnlockVerified,
                     buttonTitle: "Authorize & Test",
                     action: { engine.verifyAndAuthorizeKeychainAccess() }
                 )
             }
 
-            settingsGroup(title: "Mac Login Password (AES-256-GCM + Touch ID)") {
-                Text(
-                    engine.hasStoredPassword
-                        ? "Your login password is encrypted in the macOS Keychain."
-                        : "Enter your Mac login password once to encrypt it with Touch ID."
-                )
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.56))
-
+            settingsGroup(title: "Mac Login Password") {
                 HStack(spacing: 8) {
                     SecureField("Mac login password", text: $passwordInput)
                         .textFieldStyle(.plain)
@@ -593,21 +546,15 @@ public struct SetupWindowView: View {
             settingsGroup(title: "Anti-Spoofing & Session") {
                 toggleRow(
                     title: "Auto-Arm Session on Launch",
-                    subtitle: "Load encrypted face profiles automatically when Pliw Face starts",
                     isOn: $engine.settings.autoArmOnLaunch
                 )
 
                 Divider().background(.white.opacity(0.07))
 
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Liveness Protection")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.88))
-                        Text(engine.settings.livenessMode.summary)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.white.opacity(0.48))
-                    }
+                    Text("Liveness Protection")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.88))
                     Spacer()
                     Picker("", selection: $engine.settings.livenessMode) {
                         ForEach(LivenessMode.allCases) { mode in
@@ -658,80 +605,7 @@ public struct SetupWindowView: View {
         }
     }
 
-    // MARK: - Tab 4: Diagnostics
-
-    private var diagnosticsTab: some View {
-        VStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(.white.opacity(0.04))
-                    .frame(height: 185)
-
-                if engine.runMode == .diagnosticScan {
-                    CameraPreviewNSView(session: engine.camera.session)
-                        .frame(height: 185)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: "waveform.path.ecg")
-                            .font(.system(size: 30, weight: .light))
-                            .foregroundStyle(Self.iosGreen)
-                        Text("Start Live Diagnostics to benchmark Neural Engine latency & liveness")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.white.opacity(0.55))
-                    }
-                }
-            }
-
-            Button(action: {
-                if engine.runMode == .diagnosticScan {
-                    engine.stopAnyActiveScan()
-                } else {
-                    engine.startDiagnosticScan()
-                }
-            }) {
-                Text(engine.runMode == .diagnosticScan ? "Stop Live Scan" : "Start Live Diagnostic Scan")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8.5)
-                    .background(engine.runMode == .diagnosticScan ? Color.red.opacity(0.80) : Self.iosTeal)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-
-            settingsGroup(title: "Real-Time Telemetry") {
-                metricRow("Engine", engine.telemetry.engineName)
-                metricRow("Inference Time", String(format: "%.2f ms", engine.telemetry.inferenceMs))
-                metricRow(
-                    "Best Match",
-                    engine.telemetry.bestIdentityName.map { "\($0) (\(String(format: "%.3f", engine.telemetry.similarityScore)))" } ?? "—"
-                )
-                metricRow("Face Quality", String(format: "%.0f%%", engine.telemetry.faceQuality * 100))
-                metricRow("Liveness Verdict", livenessDescription(engine.telemetry.livenessVerdict))
-                metricRow(
-                    "Cues (Glare / Bezel / Blink / 3D)",
-                    String(
-                        format: "%.0f%% / %@ / %@ / %.3f",
-                        engine.telemetry.glareRatio * 100,
-                        engine.telemetry.bezelDetected ? "YES" : "no",
-                        engine.telemetry.blinkDetected ? "YES" : "no",
-                        engine.telemetry.parallaxScore
-                    )
-                )
-            }
-        }
-    }
-
     // MARK: - Helpers
-
-    private func livenessDescription(_ verdict: LivenessVerdict) -> String {
-        switch verdict {
-        case .pending: return "Analyzing..."
-        case .live(let reason): return "LIVE — \(reason)"
-        case .spoofDetected(let reason): return "SPOOF — \(reason)"
-        }
-    }
 
     private func settingsGroup<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -753,20 +627,14 @@ public struct SetupWindowView: View {
 
     private func permissionRow(
         title: String,
-        subtitle: String,
         granted: Bool,
         buttonTitle: String,
         action: @escaping () -> Void
     ) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text(subtitle)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.white.opacity(0.50))
-            }
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
             Spacer()
             if granted {
                 Label("Granted", systemImage: "checkmark.circle.fill")
@@ -780,33 +648,16 @@ public struct SetupWindowView: View {
         }
     }
 
-    private func toggleRow(title: String, subtitle: String, isOn: Binding<Bool>) -> some View {
+    private func toggleRow(title: String, isOn: Binding<Bool>) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 1.5) {
-                Text(title)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.88))
-                Text(subtitle)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.white.opacity(0.48))
-            }
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.88))
             Spacer()
             Toggle("", isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .controlSize(.mini)
-        }
-    }
-
-    private func metricRow(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.52))
-            Spacer()
-            Text(value)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.92))
         }
     }
 }

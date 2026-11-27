@@ -75,9 +75,12 @@ public final class FaceUnlockEngine: ObservableObject {
     @Published public private(set) var lastUnlockLatencyMs: Int? = nil
     @Published public private(set) var enrollmentCompletedPoses: [EnrollmentPose] = []
     @Published public private(set) var isEnrollmentPoseAligned: Bool = false
+    @Published public private(set) var enrollmentHeadPoint: CGPoint = .zero
+    @Published public private(set) var enrollmentGuidancePose: EnrollmentPose = .center
     @Published public private(set) var toastMessage: String? = nil
     @Published public private(set) var isToastError: Bool = false
     @Published public private(set) var isScreenLocked: Bool = false
+    @Published public private(set) var isTouchIDAuthInProgress: Bool = false
 
     public let camera = FastCameraCapture()
     public private(set) var embedder: any FaceEmbeddingEngine
@@ -97,11 +100,19 @@ public final class FaceUnlockEngine: ObservableObject {
     private var scanTimeoutTask: Task<Void, Never>?
     private var idleLockTimer: Timer?
     private var toastTask: Task<Void, Never>?
+    private var isVerifyingKeychainAccess: Bool = false
+
+    // Lock-screen multi-frame consensus scratch state (main actor only)
+    private var lockScreenMatchStreak: Int = 0
+    private var lockScreenMatchedIdentityID: UUID? = nil
 
     // Enrollment scratch state (main actor only)
     private var enrollmentTemplates: [EnrolledFaceTemplate] = []
+    private var enrollmentCompletedSet: Set<EnrollmentPose> = []
     private var lastEnrollmentCaptureUptime: TimeInterval = 0
     private var enrollmentAlignedStreak: Int = 0
+    private var enrollmentCandidatePose: EnrollmentPose?
+    private var headPoseEstimator = HeadPoseEstimator()
 
     public init(
         vault: SessionCryptoVault = .shared,
@@ -166,6 +177,27 @@ public final class FaceUnlockEngine: ObservableObject {
         }
     }
 
+    /// Automatically triggers/verifies macOS Keychain ACL ("Always Allow") on launch or after arming
+    /// so the user doesn't have to manually click "Authorize & Test" inside Settings.
+    public func autoVerifyKeychainAccessIfNeeded() {
+        guard !isKeychainUnlockVerified, !isVerifyingKeychainAccess else { return }
+        guard vault.isSessionArmed, vault.hasStoredPassword() else { return }
+        isVerifyingKeychainAccess = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isVerifyingKeychainAccess = false }
+            do {
+                try await Task.detached(priority: .userInitiated) { [vault = self.vault] in
+                    try vault.verifyKeychainPasswordAccess()
+                }.value
+                self.isKeychainUnlockVerified = true
+            } catch {
+                self.isKeychainUnlockVerified = false
+            }
+        }
+    }
+
     /// Pre-authorizes Keychain password read while unlocked so macOS "Always Allow" never hides behind the Lock Screen.
     public func verifyAndAuthorizeKeychainAccess() {
         Task { @MainActor in
@@ -196,11 +228,14 @@ public final class FaceUnlockEngine: ObservableObject {
 
     public func armSession() {
         Task { @MainActor in
+            isTouchIDAuthInProgress = true
+            defer { isTouchIDAuthInProgress = false }
             do {
                 try await vault.armSession(reason: "Authorize Pliw Face unlock session")
                 isSessionArmed = vault.isSessionArmed
                 reloadIdentities()
                 startIdleSessionTimer()
+                autoVerifyKeychainAccessIfNeeded()
                 showToast("Session armed — Face Unlock active", isError: false)
             } catch SessionVaultError.authenticationCancelled {
                 showToast("Touch ID cancelled", isError: false)
@@ -217,6 +252,38 @@ public final class FaceUnlockEngine: ObservableObject {
         identities = []
         stopIdleSessionTimer()
         showToast("Session locked", isError: false)
+    }
+
+    public func disarmSessionWithAuth() {
+        Task { @MainActor in
+            isTouchIDAuthInProgress = true
+            defer { isTouchIDAuthInProgress = false }
+            do {
+                try await vault.authenticateOwner(reason: "Authenticate to lock Pliw Face session")
+                disarmSession()
+            } catch SessionVaultError.authenticationCancelled {
+                showToast("Touch ID cancelled", isError: false)
+            } catch {
+                showToast(error.localizedDescription, isError: true)
+            }
+        }
+    }
+
+    public func setFaceUnlockEnabledWithAuth(_ enabled: Bool) {
+        guard settings.isEnabled != enabled else { return }
+        Task { @MainActor in
+            isTouchIDAuthInProgress = true
+            defer { isTouchIDAuthInProgress = false }
+            do {
+                let reason = enabled ? "Authenticate to enable Face Unlock" : "Authenticate to disable Face Unlock"
+                try await vault.authenticateOwner(reason: reason)
+                settings.isEnabled = enabled
+            } catch SessionVaultError.authenticationCancelled {
+                showToast("Touch ID cancelled", isError: false)
+            } catch {
+                showToast(error.localizedDescription, isError: true)
+            }
+        }
     }
 
     public func saveMacPassword(_ plainPassword: String) {
@@ -237,11 +304,13 @@ public final class FaceUnlockEngine: ObservableObject {
                 let copy = bytes
                 try await Task.detached(priority: .userInitiated) { [vault] in
                     try vault.savePassword(copy)
+                    try vault.verifyKeychainPasswordAccess()
                 }.value
 
+                isKeychainUnlockVerified = true
                 refreshSystemReadiness()
                 startIdleSessionTimer()
-                showToast("Login password encrypted in Keychain", isError: false)
+                showToast("Login password encrypted & Keychain authorized", isError: false)
             } catch SessionVaultError.authenticationCancelled {
                 showToast("Touch ID cancelled", isError: false)
             } catch {
@@ -345,6 +414,10 @@ public final class FaceUnlockEngine: ObservableObject {
             notchHoverTrigger.stopListening()
             if runMode == .lockScreenUnlock {
                 stopAnyActiveScan()
+            } else if case .rejected = phase {
+                phase = .idle
+            } else if case .failed = phase {
+                phase = .idle
             }
         }
     }
@@ -437,9 +510,14 @@ public final class FaceUnlockEngine: ObservableObject {
             stopAnyActiveScan()
             enrollmentTemplates = []
             enrollmentCompletedPoses = []
+            enrollmentCompletedSet = []
             lastEnrollmentCaptureUptime = 0
             enrollmentAlignedStreak = 0
+            enrollmentCandidatePose = nil
             isEnrollmentPoseAligned = false
+            enrollmentHeadPoint = .zero
+            enrollmentGuidancePose = .center
+            headPoseEstimator.reset()
             beginScan(mode: .enrollment(name: label, poseIndex: 0), timeout: nil)
         }
     }
@@ -458,6 +536,11 @@ public final class FaceUnlockEngine: ObservableObject {
         runMode = .idle
         isEnrollmentPoseAligned = false
         enrollmentAlignedStreak = 0
+        enrollmentCandidatePose = nil
+        enrollmentHeadPoint = .zero
+        lockScreenMatchStreak = 0
+        lockScreenMatchedIdentityID = nil
+        headPoseEstimator.reset()
         frameGate.resetCounter()
         liveness.reset()
     }
@@ -466,6 +549,8 @@ public final class FaceUnlockEngine: ObservableObject {
         runMode = mode
         phase = .warmingCamera
         scanStartUptime = ProcessInfo.processInfo.systemUptime
+        lockScreenMatchStreak = 0
+        lockScreenMatchedIdentityID = nil
         frameGate.resetCounter()
         liveness.reset()
         telemetry = ScanTelemetry(
@@ -557,12 +642,20 @@ public final class FaceUnlockEngine: ObservableObject {
 
         let landmarksReq = VNDetectFaceLandmarksRequest()
         let qualityReq = VNDetectFaceCaptureQualityRequest()
+        let faceRectReq = VNDetectFaceRectanglesRequest()
+        faceRectReq.revision = VNDetectFaceRectanglesRequestRevision3
 
         // Throttle rectangle/bezel detection to every 3rd frame to save CPU/GPU budget
         let localFrameNum = frameGate.nextFrameNumber()
-        let runBezelCheck = (localFrameNum % 3 == 1)
+        let isEnrolling: Bool
+        if case .enrollment = mode { isEnrolling = true } else { isEnrolling = false }
+        let runBezelCheck = !isEnrolling && (localFrameNum % 3 == 1)
 
         var requests: [VNRequest] = [landmarksReq, qualityReq]
+        if isEnrolling {
+            // Rev 3 FaceRectangles provides true continuous 3D yaw + pitch (Landmarks leaves pitch == nil on macOS)
+            requests.append(faceRectReq)
+        }
         let rectReq = VNDetectRectanglesRequest()
         if runBezelCheck {
             rectReq.maximumObservations = 4
@@ -588,13 +681,23 @@ public final class FaceUnlockEngine: ObservableObject {
                 self.telemetry.faceDetected = false
                 self.telemetry.framesProcessed = localFrameNum
                 self.telemetry.totalElapsedMs = (ProcessInfo.processInfo.systemUptime - self.scanStartUptime) * 1000
+                if case .enrollment = self.runMode {
+                    self.isEnrollmentPoseAligned = false
+                    self.enrollmentAlignedStreak = 0
+                    self.enrollmentCandidatePose = nil
+                }
             }
             return
         }
 
-        // Early-exit frame gatekeeper: drop pitch-black camera warm-up frames while remaining responsive in dim night lighting
+        let rectFace = (faceRectReq.results ?? []).max(by: {
+            ($0.boundingBox.width * $0.boundingBox.height) < ($1.boundingBox.width * $1.boundingBox.height)
+        })
+
+        // Early-exit frame gatekeeper: angled enrollment faces naturally score lower on frontal quality models
         let quality = (qualityReq.results?.first?.faceCaptureQuality) ?? 0.35
-        guard quality >= 0.12 else {
+        let minFrameQuality: Float = isEnrolling ? 0.06 : 0.12
+        guard quality >= minFrameQuality else {
             return
         }
 
@@ -613,7 +716,7 @@ public final class FaceUnlockEngine: ObservableObject {
         }
         let inferMs = (ProcessInfo.processInfo.systemUptime - inferStart) * 1000
 
-        // 3. Extract fast zero-copy liveness cues
+        // 3. Extract fast zero-copy liveness cues & continuous 3D head pose
         let glareRatio = VectorMath.computeSpecularGlareRatio(
             pixelBuffer: pixelBuffer,
             normalizedVisionBox: face.boundingBox
@@ -622,8 +725,9 @@ public final class FaceUnlockEngine: ObservableObject {
             ? StreamingLivenessDetector.detectFramingBezel(rectangles: rectReq.results ?? [], faceBox: face.boundingBox)
             : false
         let geo = StreamingLivenessDetector.extractGeometryCues(from: face)
-        let yaw = face.yaw?.floatValue ?? 0
-        let pitch = face.pitch?.floatValue ?? 0
+        let headPose = HeadPoseEstimator.extractRawPose(landmarksFace: face, rectanglesFace: rectFace)
+        let yaw = headPose.yaw
+        let pitch = headPose.pitch
 
         let sample = LivenessFrameSample(
             timestamp: timestamp,
@@ -636,8 +740,8 @@ public final class FaceUnlockEngine: ObservableObject {
             faceQuality: quality
         )
 
-        // 4. Match against enrolled templates with Accelerate vDSP (< 0.01ms)
-        let match = VectorMath.bestMatch(
+        // 4. Match against enrolled templates + centroid consensus with Accelerate vDSP (< 0.02ms)
+        let match = VectorMath.bestVerifiedMatch(
             query: vector,
             identities: identities,
             modelIdentifier: embedder.modelIdentifier
@@ -665,7 +769,7 @@ public final class FaceUnlockEngine: ObservableObject {
         quality: Float,
         inferMs: Double,
         sample: LivenessFrameSample,
-        match: (identity: FaceIdentity, score: Float)?,
+        match: FaceMatchResult?,
         frameNumber: Int,
         yaw: Float,
         pitch: Float
@@ -680,7 +784,7 @@ public final class FaceUnlockEngine: ObservableObject {
             faceDetected: true,
             faceQuality: quality,
             bestIdentityName: match?.identity.name,
-            similarityScore: match?.score ?? 0,
+            similarityScore: match?.bestTemplateScore ?? 0,
             inferenceMs: inferMs,
             totalElapsedMs: elapsedMs,
             livenessVerdict: livenessEval.verdict,
@@ -723,24 +827,82 @@ public final class FaceUnlockEngine: ObservableObject {
         yaw: Float,
         pitch: Float
     ) {
-        let allPoses = EnrollmentPose.allCases
-        guard poseIndex < allPoses.count else { return }
+        let rawPose = HeadPoseSample(yaw: yaw, pitch: pitch)
+        let relative = headPoseEstimator.update(raw: rawPose)
+        let now = ProcessInfo.processInfo.systemUptime
 
-        let pose = allPoses[poseIndex]
-        let aligned = pose.matches(yaw: yaw, pitch: pitch) && quality >= 0.20
-        isEnrollmentPoseAligned = aligned
+        // Stage 1: Calibrate & capture neutral .center pose first
+        if !enrollmentCompletedSet.contains(.center) {
+            enrollmentGuidancePose = .center
+            enrollmentHeadPoint = .zero
 
-        guard aligned else {
-            enrollmentAlignedStreak = 0
+            let steadyCenter = quality >= 0.14 && abs(rawPose.yaw) <= 0.32
+            isEnrollmentPoseAligned = steadyCenter
+            guard steadyCenter else {
+                enrollmentAlignedStreak = 0
+                return
+            }
+
+            enrollmentAlignedStreak += 1
+            guard enrollmentAlignedStreak >= 3 else { return }
+
+            headPoseEstimator.calibrateCenter(headPoseEstimator.smoothed)
+            captureEnrollmentPose(
+                .center,
+                name: name,
+                vector: vector,
+                quality: quality,
+                now: now
+            )
             return
         }
 
-        enrollmentAlignedStreak += 1
-        let now = ProcessInfo.processInfo.systemUptime
-        guard enrollmentAlignedStreak >= 2, now - lastEnrollmentCaptureUptime >= 0.45 else { return }
+        // Stage 2: iOS Face ID-style free-flow 360° circle across the 8 remaining outer sectors in any order
+        enrollmentHeadPoint = headPoseEstimator.normalizedPointer(for: relative)
 
+        if let nextRemaining = EnrollmentPose.outerRingPoses.first(where: { !enrollmentCompletedSet.contains($0) }) {
+            enrollmentGuidancePose = nextRemaining
+        }
+
+        guard let matchedSector = headPoseEstimator.matchedOuterPose(for: relative),
+              !enrollmentCompletedSet.contains(matchedSector),
+              quality >= 0.08 else {
+            isEnrollmentPoseAligned = false
+            enrollmentAlignedStreak = 0
+            enrollmentCandidatePose = nil
+            return
+        }
+
+        isEnrollmentPoseAligned = true
+        if enrollmentCandidatePose == matchedSector {
+            enrollmentAlignedStreak += 1
+        } else {
+            enrollmentCandidatePose = matchedSector
+            enrollmentAlignedStreak = 1
+        }
+
+        guard enrollmentAlignedStreak >= 1, now - lastEnrollmentCaptureUptime >= 0.12 else { return }
+
+        captureEnrollmentPose(
+            matchedSector,
+            name: name,
+            vector: vector,
+            quality: quality,
+            now: now
+        )
+    }
+
+    private func captureEnrollmentPose(
+        _ pose: EnrollmentPose,
+        name: String,
+        vector: [Float],
+        quality: Float,
+        now: TimeInterval
+    ) {
         enrollmentAlignedStreak = 0
+        enrollmentCandidatePose = nil
         isEnrollmentPoseAligned = false
+        enrollmentCompletedSet.insert(pose)
         enrollmentTemplates.append(EnrolledFaceTemplate(pose: pose, vector: vector, qualityScore: quality))
         enrollmentCompletedPoses.append(pose)
         lastEnrollmentCaptureUptime = now
@@ -749,9 +911,12 @@ public final class FaceUnlockEngine: ObservableObject {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
 
-        let nextIndex = poseIndex + 1
-        if nextIndex < allPoses.count {
-            runMode = .enrollment(name: name, poseIndex: nextIndex)
+        let capturedCount = enrollmentCompletedSet.count
+        if capturedCount < EnrollmentPose.allCases.count {
+            if let nextRemaining = EnrollmentPose.outerRingPoses.first(where: { !enrollmentCompletedSet.contains($0) }) {
+                enrollmentGuidancePose = nextRemaining
+            }
+            runMode = .enrollment(name: name, poseIndex: capturedCount)
         } else {
             // Save encrypted identity
             let identity = FaceIdentity(
@@ -765,7 +930,6 @@ public final class FaceUnlockEngine: ObservableObject {
             do {
                 try identityStore.save(identities)
                 stopAnyActiveScan()
-                showToast("Enrolled \"\(name)\" (\(enrollmentTemplates.count) angles encrypted)", isError: false)
             } catch {
                 stopAnyActiveScan()
                 showToast("Failed to save face identity: \(error.localizedDescription)", isError: true)
@@ -773,9 +937,9 @@ public final class FaceUnlockEngine: ObservableObject {
         }
     }
 
-    /// Strict 5-gate lock-screen unlock verification.
+    /// Strict multi-frame + centroid consensus lock-screen unlock verification.
     private func handleLockScreenDecision(
-        match: (identity: FaceIdentity, score: Float)?,
+        match: FaceMatchResult?,
         livenessEval: LivenessEvaluation,
         elapsedMs: Double
     ) {
@@ -785,9 +949,27 @@ public final class FaceUnlockEngine: ObservableObject {
             return
         }
 
-        guard let match, match.score >= settings.similarityThreshold else {
+        let centroidFloor = max(0.30, settings.similarityThreshold - 0.07)
+        guard let match,
+              match.bestTemplateScore >= settings.similarityThreshold,
+              match.centroidScore >= centroidFloor else {
+            lockScreenMatchStreak = 0
+            lockScreenMatchedIdentityID = nil
             return
         }
+
+        if lockScreenMatchedIdentityID == match.identity.id {
+            lockScreenMatchStreak += 1
+        } else {
+            lockScreenMatchedIdentityID = match.identity.id
+            lockScreenMatchStreak = 1
+        }
+
+        let requiredConsensusFrames = (settings.livenessMode == .strict) ? 3 : 2
+        guard lockScreenMatchStreak >= requiredConsensusFrames else {
+            return
+        }
+
         guard livenessEval.verdict.isLive else {
             return
         }

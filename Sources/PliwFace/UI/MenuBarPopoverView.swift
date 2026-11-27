@@ -26,7 +26,30 @@ public struct MenuBarPopoverView: View {
             VStack(spacing: 12) {
                 headerRow
                 primarySessionButton
-                readinessCard
+
+                if engine.isSessionArmed && !engine.isReadyForLockScreenUnlock {
+                    Button(action: onOpenSetup) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.orange)
+                            Text("Finish setup in Settings")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.90))
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.45))
+                        }
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.orange.opacity(0.12)))
+                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(Color.orange.opacity(0.25), lineWidth: 1))
+                        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 quickControlsCard
 
                 if let toast = engine.toastMessage {
@@ -75,14 +98,9 @@ public struct MenuBarPopoverView: View {
                         : Color(red: 0.45, green: 0.74, blue: 1.0)
                 )
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Pliw Face")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.white)
-                Text(engine.embedder.displayName)
-                    .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.46))
-            }
+            Text("Pliw Face")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
 
             Spacer()
 
@@ -126,7 +144,7 @@ public struct MenuBarPopoverView: View {
     private var primarySessionButton: some View {
         Button(action: {
             if engine.isSessionArmed {
-                engine.disarmSession()
+                engine.disarmSessionWithAuth()
             } else {
                 engine.armSession()
             }
@@ -167,75 +185,6 @@ public struct MenuBarPopoverView: View {
         .accessibilityLabel(engine.isSessionArmed ? "Lock Pliw Face session" : "Arm Pliw Face session with Touch ID")
     }
 
-    private var readinessCard: some View {
-        VStack(spacing: 0) {
-            readinessRow(
-                title: "Face Enrolled",
-                ok: !engine.enabledIdentitiesForCurrentModel.isEmpty,
-                detail: engine.enabledIdentitiesForCurrentModel.isEmpty
-                    ? (engine.isSessionArmed ? "None" : "Arm to load")
-                    : "\(engine.enabledIdentitiesForCurrentModel.count) active"
-            )
-            Divider().background(.white.opacity(0.07))
-            readinessRow(
-                title: "Login Password",
-                ok: engine.hasStoredPassword,
-                detail: engine.hasStoredPassword ? "Encrypted" : "Not Set"
-            )
-            Divider().background(.white.opacity(0.07))
-            readinessRow(
-                title: "Camera & Accessibility",
-                ok: engine.cameraAccess.isAuthorized && engine.accessibilityTrusted,
-                detail: permissionSummary
-            )
-            if let latency = engine.lastUnlockLatencyMs {
-                Divider().background(.white.opacity(0.07))
-                HStack {
-                    Text("Last Unlock")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.55))
-                    Spacer()
-                    Text("\(latency) ms")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(Color(red: 0.42, green: 0.95, blue: 0.85))
-                }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 7)
-            }
-        }
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(0.045)))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(.white.opacity(0.08), lineWidth: 1))
-    }
-
-    private var permissionSummary: String {
-        if engine.cameraAccess.isAuthorized && engine.accessibilityTrusted {
-            return "Ready"
-        }
-        if !engine.cameraAccess.isAuthorized && !engine.accessibilityTrusted {
-            return "Both Needed"
-        }
-        return engine.cameraAccess.isAuthorized ? "Need Accessibility" : "Need Camera"
-    }
-
-    private func readinessRow(title: String, ok: Bool, detail: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.60))
-            Spacer()
-            HStack(spacing: 5) {
-                Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(ok ? Color(red: 0.30, green: 0.92, blue: 0.80) : .orange)
-                Text(detail)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.88))
-            }
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 7)
-    }
-
     private var quickControlsCard: some View {
         VStack(spacing: 8) {
             HStack {
@@ -243,10 +192,13 @@ public struct MenuBarPopoverView: View {
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.white.opacity(0.82))
                 Spacer()
-                Toggle("", isOn: $engine.settings.isEnabled)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
+                Toggle("", isOn: Binding(
+                    get: { engine.settings.isEnabled },
+                    set: { engine.setFaceUnlockEnabledWithAuth($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
             }
 
             HStack {
@@ -321,7 +273,7 @@ public struct MenuBarPopoverView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "slider.horizontal.3")
                         .font(.system(size: 10.5, weight: .semibold))
-                    Text("Setup & Face Lab")
+                    Text("Setup")
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .foregroundStyle(.white.opacity(0.88))

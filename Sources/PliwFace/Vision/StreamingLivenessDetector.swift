@@ -225,6 +225,15 @@ public final class StreamingLivenessDetector {
                 )
             }
         case .strict:
+            if highGlareCount >= 1 && hasBezel {
+                return LivenessEvaluation(
+                    verdict: .spoofDetected(reason: "Screen reflection & bezel detected"),
+                    blinkDetected: false,
+                    parallaxScore: parallaxScore,
+                    maxGlareRatio: maxGlare,
+                    bezelDetected: true
+                )
+            }
             if blinkDetected {
                 return LivenessEvaluation(
                     verdict: .live(reason: "Eye blink confirmed"),
@@ -234,7 +243,7 @@ public final class StreamingLivenessDetector {
                     bezelDetected: hasBezel
                 )
             }
-            if hasParallax && samples.count >= 4 {
+            if parallaxScore >= 0.042 && samples.count >= 5 {
                 return LivenessEvaluation(
                     verdict: .live(reason: "3D head-turn parallax confirmed"),
                     blinkDetected: false,

@@ -280,27 +280,88 @@ final class PliwFaceTests: XCTestCase {
         XCTAssertEqual(decoded.hudStyle, .notchWings)
         XCTAssertTrue(decoded.unlockOnNotchHover)
         XCTAssertTrue(decoded.autoArmOnLaunch)
+        XCTAssertTrue(decoded.launchAtLoginPreferred)
     }
 
-    func testNineAngleEnrollmentPoses() {
-        XCTAssertEqual(EnrollmentPose.allCases.count, 9)
-        XCTAssertEqual(Set(EnrollmentPose.allCases.map(\.rawValue)).count, 9)
+    func testSeventeenAngleEnrollmentPosesAndCentroidConsensus() {
+        XCTAssertEqual(EnrollmentPose.allCases.count, 17)
+        XCTAssertEqual(Set(EnrollmentPose.allCases.map(\.rawValue)).count, 17)
+        XCTAssertEqual(EnrollmentPose.outerRingPoses.count, 16)
 
-        // Looking straight ahead must ONLY match .center (never auto-advance left/right/up/down/diagonals)
+        // Looking straight ahead must ONLY match .center (never auto-advance outer sectors)
         XCTAssertTrue(EnrollmentPose.center.matches(yaw: 0.0, pitch: 0.0))
         for nonCenter in EnrollmentPose.allCases where nonCenter != .center {
             XCTAssertFalse(nonCenter.matches(yaw: 0.0, pitch: 0.0), "\(nonCenter) should not match neutral gaze")
         }
 
-        // Turning into each target angle should match that specific pose
-        XCTAssertTrue(EnrollmentPose.slightLeft.matches(yaw: 0.25, pitch: 0.0))
-        XCTAssertTrue(EnrollmentPose.slightRight.matches(yaw: -0.25, pitch: 0.0))
-        XCTAssertTrue(EnrollmentPose.slightUp.matches(yaw: 0.0, pitch: -0.15))
-        XCTAssertTrue(EnrollmentPose.slightDown.matches(yaw: 0.0, pitch: 0.15))
-        XCTAssertTrue(EnrollmentPose.upLeft.matches(yaw: 0.20, pitch: -0.14))
-        XCTAssertTrue(EnrollmentPose.upRight.matches(yaw: -0.20, pitch: -0.14))
-        XCTAssertTrue(EnrollmentPose.downLeft.matches(yaw: 0.20, pitch: 0.14))
-        XCTAssertTrue(EnrollmentPose.downRight.matches(yaw: -0.20, pitch: 0.14))
+        // Screen-aligned coordinates: yaw < 0 = left, yaw > 0 = right, pitch < 0 = up, pitch > 0 = down
+        XCTAssertTrue(EnrollmentPose.slightLeft.matches(yaw: -0.20, pitch: 0.0))
+        XCTAssertTrue(EnrollmentPose.slightRight.matches(yaw: 0.20, pitch: 0.0))
+        XCTAssertTrue(EnrollmentPose.slightUp.matches(yaw: 0.0, pitch: -0.14))
+        XCTAssertTrue(EnrollmentPose.slightDown.matches(yaw: 0.0, pitch: 0.14))
+        XCTAssertTrue(EnrollmentPose.upLeft.matches(yaw: -0.16, pitch: -0.11))
+        XCTAssertTrue(EnrollmentPose.upRight.matches(yaw: 0.16, pitch: -0.11))
+        XCTAssertTrue(EnrollmentPose.downLeft.matches(yaw: -0.16, pitch: 0.11))
+        XCTAssertTrue(EnrollmentPose.downRight.matches(yaw: 0.16, pitch: 0.11))
+
+        // Clock-face degree mapping covers all 16 outer 22.5° sectors cleanly
+        XCTAssertEqual(EnrollmentPose.outerPose(forClockDegrees: 0), .slightUp)
+        XCTAssertEqual(EnrollmentPose.outerPose(forClockDegrees: 22.5), .upUpRight)
+        XCTAssertEqual(EnrollmentPose.outerPose(forClockDegrees: 45), .upRight)
+        XCTAssertEqual(EnrollmentPose.outerPose(forClockDegrees: 67.5), .rightUpRight)
+        XCTAssertEqual(EnrollmentPose.outerPose(forClockDegrees: 90), .slightRight)
+        XCTAssertEqual(EnrollmentPose.outerPose(forClockDegrees: 180), .slightDown)
+        XCTAssertEqual(EnrollmentPose.outerPose(forClockDegrees: 270), .slightLeft)
+        XCTAssertEqual(EnrollmentPose.outerPose(forClockDegrees: 337.5), .upUpLeft)
+        XCTAssertEqual(EnrollmentPose.outerPose(forClockDegrees: 358), .slightUp)
+
+        // Centroid consistency verification via VectorMath.bestVerifiedMatch
+        let vec = VectorMath.l2Normalize((0..<512).map { sin(Float($0) * 0.21) })
+        let identity = FaceIdentity(
+            name: "Owner",
+            modelIdentifier: "arcface-w600k-mbf-fp16-v1",
+            embeddingDimension: 512,
+            templates: EnrollmentPose.allCases.map {
+                EnrolledFaceTemplate(pose: $0, vector: vec, qualityScore: 0.75)
+            }
+        )
+        let verified = VectorMath.bestVerifiedMatch(
+            query: vec,
+            identities: [identity],
+            modelIdentifier: "arcface-w600k-mbf-fp16-v1"
+        )
+        XCTAssertNotNil(verified)
+        XCTAssertEqual(verified?.bestTemplateScore ?? 0, 1.0, accuracy: 1e-4)
+        XCTAssertEqual(verified?.centroidScore ?? 0, 1.0, accuracy: 1e-4)
+    }
+
+    func testHeadPoseEstimatorCalibrationAndFreeFlowSectors() {
+        var estimator = HeadPoseEstimator(yawSpan: 0.14, pitchSpan: 0.095, smoothingAlpha: 1.0)
+
+        // Simulate a tilted MacBook screen where neutral posture has pitch = +0.18, yaw = -0.05
+        estimator.calibrateCenter(HeadPoseSample(yaw: -0.05, pitch: 0.18))
+        let neutralRel = estimator.update(raw: HeadPoseSample(yaw: -0.05, pitch: 0.18))
+        XCTAssertEqual(neutralRel.yaw, 0.0, accuracy: 1e-5)
+        XCTAssertEqual(neutralRel.pitch, 0.0, accuracy: 1e-5)
+        XCTAssertNil(estimator.matchedOuterPose(for: neutralRel))
+
+        // Turning left from calibrated center should match .slightLeft and point toward -x
+        let leftRel = estimator.update(raw: HeadPoseSample(yaw: -0.22, pitch: 0.18))
+        XCTAssertEqual(estimator.matchedOuterPose(for: leftRel), .slightLeft)
+        let leftPtr = estimator.normalizedPointer(for: leftRel)
+        XCTAssertLessThan(leftPtr.x, -0.9)
+
+        // Turning right from calibrated center should match .slightRight
+        let rightRel = estimator.update(raw: HeadPoseSample(yaw: 0.12, pitch: 0.18))
+        XCTAssertEqual(estimator.matchedOuterPose(for: rightRel), .slightRight)
+
+        // Tilting chin up relative to tilted MacBook baseline should match .slightUp
+        let upRel = estimator.update(raw: HeadPoseSample(yaw: -0.05, pitch: 0.05))
+        XCTAssertEqual(estimator.matchedOuterPose(for: upRel), .slightUp)
+
+        // Tilting chin down + right should match .downRight
+        let downRightRel = estimator.update(raw: HeadPoseSample(yaw: 0.11, pitch: 0.30))
+        XCTAssertEqual(estimator.matchedOuterPose(for: downRightRel), .downRight)
     }
 
     func testAutoArmFromKeychainIfAvailableLoadsStoredKey() throws {

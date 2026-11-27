@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 @MainActor
@@ -20,6 +21,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         setupMainMenu()
 
         FaceUnlockEngine.shared.startBackgroundMonitoring()
+        if FaceUnlockEngine.shared.settings.launchAtLoginPreferred,
+           SMAppService.mainApp.status != .enabled {
+            try? SMAppService.mainApp.register()
+        }
+        FaceUnlockEngine.shared.autoVerifyKeychainAccessIfNeeded()
         notchHUDController = NotchHUDController()
 
         statusBarController = StatusBarController(
@@ -52,14 +58,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         }
 
         Task { @MainActor [weak self] in
-            self?.notchHUDController?.showTouchIDScanning()
             do {
                 try await SessionCryptoVault.shared.authenticateOwner(reason: "Authenticate to open Pliw Face Settings")
             } catch {
-                self?.notchHUDController?.cancelTouchID()
                 return
             }
-            self?.notchHUDController?.showTouchIDUnlocked()
             self?.presentSetupWindowAuthorized()
         }
     }

@@ -50,7 +50,9 @@ public final class StatusBarController: NSObject, NSPopoverDelegate {
     }
 
     private func configurePopover() {
-        popover.behavior = .transient
+        // Use .applicationDefined so macOS Touch ID sheets don't auto-dismiss the popover;
+        // clicking outside still dismisses it cleanly via `outsideClickMonitor`.
+        popover.behavior = .applicationDefined
         popover.animates = true
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.delegate = self
@@ -133,7 +135,7 @@ public final class StatusBarController: NSObject, NSPopoverDelegate {
         sessionItem.target = self
         menu.addItem(sessionItem)
 
-        let setupItem = NSMenuItem(title: "Setup & Face Lab...", action: #selector(openSetupWindow), keyEquivalent: ",")
+        let setupItem = NSMenuItem(title: "Setup...", action: #selector(openSetupWindow), keyEquivalent: ",")
         setupItem.target = self
         menu.addItem(setupItem)
 
@@ -151,7 +153,7 @@ public final class StatusBarController: NSObject, NSPopoverDelegate {
     @objc private func toggleSession() {
         let engine = FaceUnlockEngine.shared
         if engine.isSessionArmed {
-            engine.disarmSession()
+            engine.disarmSessionWithAuth()
         } else {
             engine.armSession()
         }
@@ -169,9 +171,9 @@ public final class StatusBarController: NSObject, NSPopoverDelegate {
         removeOutsideClickMonitor()
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor [weak self] in
-                if self?.popover.isShown == true {
-                    self?.closePopover()
-                }
+                guard let self, self.popover.isShown else { return }
+                guard !FaceUnlockEngine.shared.isTouchIDAuthInProgress else { return }
+                self.closePopover()
             }
         }
     }

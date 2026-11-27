@@ -164,6 +164,101 @@ private struct NotchSilhouetteShape: Shape {
     }
 }
 
+/// Single-scalar animatable liquid Dynamic Island silhouette anchored flush at `y = 0`.
+/// - Top concave ears ramp up immediately (`p * 4`) so the organic curve appears right away at the notch bezel.
+/// - Bottom corners stay rounded throughout the entire morph (never turning into a sharp rectangle).
+/// - Returns an empty path at `p <= 0.005` so zero pixels remain when retracted.
+private struct DynamicIslandLiquidShape: Shape {
+    var progress: CGFloat
+    let baseWidth: CGFloat
+    let baseHeight: CGFloat
+    let expandedWidth: CGFloat
+    let expandedHeight: CGFloat
+    let hasHardwareNotch: Bool
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let p = max(0, min(1, progress))
+        guard p > 0.005 else { return Path() }
+
+        if !hasHardwareNotch {
+            let collapsedW: CGFloat = 96
+            let collapsedH: CGFloat = 14
+            let w = collapsedW + (expandedWidth - collapsedW) * p
+            let h = collapsedH + (expandedHeight - collapsedH) * p
+            let minX = rect.midX - w * 0.5
+            let corner = min(34, h * 0.48, w * 0.45)
+            return Path(roundedRect: CGRect(x: minX, y: rect.minY, width: w, height: h), cornerRadius: corner)
+        }
+
+        // Top concave ears appear immediately as the island begins emerging from the notch
+        let collapsedH = max(4, baseHeight - 4)
+        let h = collapsedH + (expandedHeight - collapsedH) * p
+        let earRamp = min(1.0, p * 4.0)
+        let ear = min(14.0 * earRamp, h * 0.42)
+
+        // Keep inner body width strictly >= physical notch width (`baseWidth`) at every frame
+        // so the MacBook's hardware notch NEVER peeks out past the side walls while retracting.
+        let expandedBodyW = max(baseWidth, expandedWidth - 28.0)
+        let bodyW = baseWidth + (expandedBodyW - baseWidth) * p
+        let w = bodyW + ear * 2.0
+
+        let minX = rect.midX - w * 0.5
+        let maxX = rect.midX + w * 0.5
+        let minY = rect.minY
+        let maxY = rect.minY + h
+
+        let br = min(34.0, max(8.0, h * 0.46), max(8.0, bodyW * 0.46))
+        let kEar: CGFloat = 0.62
+        let kBot: CGFloat = 0.60
+
+        var path = Path()
+        path.move(to: CGPoint(x: minX, y: minY))
+        path.addLine(to: CGPoint(x: maxX, y: minY))
+
+        // Right concave ear
+        path.addCurve(
+            to: CGPoint(x: maxX - ear, y: minY + ear),
+            control1: CGPoint(x: maxX - ear * kEar, y: minY),
+            control2: CGPoint(x: maxX - ear, y: minY + ear * (1 - kEar))
+        )
+
+        path.addLine(to: CGPoint(x: maxX - ear, y: maxY - br))
+
+        // Bottom-right Apple squircle corner
+        path.addCurve(
+            to: CGPoint(x: maxX - ear - br, y: maxY),
+            control1: CGPoint(x: maxX - ear, y: maxY - br * (1 - kBot)),
+            control2: CGPoint(x: maxX - ear - br * (1 - kBot), y: maxY)
+        )
+
+        path.addLine(to: CGPoint(x: minX + ear + br, y: maxY))
+
+        // Bottom-left Apple squircle corner
+        path.addCurve(
+            to: CGPoint(x: minX + ear, y: maxY - br),
+            control1: CGPoint(x: minX + ear + br * (1 - kBot), y: maxY),
+            control2: CGPoint(x: minX + ear, y: maxY - br * (1 - kBot))
+        )
+
+        path.addLine(to: CGPoint(x: minX + ear, y: minY + ear))
+
+        // Left concave ear
+        path.addCurve(
+            to: CGPoint(x: minX, y: minY),
+            control1: CGPoint(x: minX + ear, y: minY + ear * (1 - kEar)),
+            control2: CGPoint(x: minX + ear * kEar, y: minY)
+        )
+
+        path.closeSubpath()
+        return path
+    }
+}
+
 /// Classic iOS Face ID double-shake effect on failure.
 private struct FaceIDShakeEffect: GeometryEffect {
     var trigger: CGFloat
@@ -210,15 +305,10 @@ public struct NotchHUDView: View {
         !model.state.isHidden
     }
 
-    /// In Dynamic Island mode, `.lockedIdle` stays visually collapsed behind the hardware notch (opacity 0)
-    /// so `.rejected` -> `.lockedIdle` retracts identically to `.unlocked` -> `.hidden`.
+    /// Both styles stay visually collapsed behind the hardware notch during `.lockedIdle`
+    /// so the invisible hover-to-rescan tracking area works without keeping wings visible while idle.
     private var isVisuallyVisible: Bool {
-        switch model.style {
-        case .notchWings:
-            return isVisible
-        case .dynamicIsland:
-            return isActiveState
-        }
+        isActiveState
     }
 
     private var statusAccent: Color {
@@ -242,9 +332,9 @@ public struct NotchHUDView: View {
     private var topEarRadius: CGFloat {
         switch model.style {
         case .notchWings:
-            return isVisible ? 10 : 0
+            return isActiveState ? 10 : 0
         case .dynamicIsland:
-            return isActiveState ? 14 : 0
+            return 14
         }
     }
 
@@ -257,20 +347,15 @@ public struct NotchHUDView: View {
         switch model.style {
         case .notchWings:
             switch model.state {
-            case .hidden:
+            case .hidden, .lockedIdle:
                 return hasNotch ? max(0, baseW - 2) : 110
-            case .lockedIdle, .scanning, .unlocked, .rejected:
-                // Exact same width across Standby, Scanning, Retry, and Unlocked so icons never jump!
+            case .scanning, .unlocked, .rejected:
+                // Exact same width across Scanning, Retry, and Unlocked so icons never jump!
                 return hasNotch ? (baseW + 84 + earComp) : 160
             }
 
         case .dynamicIsland:
-            switch model.state {
-            case .hidden, .lockedIdle:
-                return hasNotch ? max(0, baseW - 2) : 110
-            case .scanning, .unlocked, .rejected:
-                return hasNotch ? (baseW + 56 + earComp) : 210
-            }
+            return hasNotch ? (baseW + 56 + earComp) : 210
         }
     }
 
@@ -281,28 +366,23 @@ public struct NotchHUDView: View {
         switch model.style {
         case .notchWings:
             switch model.state {
-            case .hidden:
+            case .hidden, .lockedIdle:
                 return hasNotch ? max(0, baseH - 2) : 30
             default:
                 return hasNotch ? baseH : 36
             }
 
         case .dynamicIsland:
-            switch model.state {
-            case .hidden, .lockedIdle:
-                return hasNotch ? max(0, baseH - 2) : 30
-            case .scanning, .unlocked, .rejected:
-                return hasNotch ? (baseH + 92) : 136
-            }
+            return hasNotch ? (baseH + 92) : 136
         }
     }
 
     private var bottomCornerRadius: CGFloat {
         switch model.style {
         case .notchWings:
-            return model.geometry.hasHardwareNotch ? (isVisible ? 12 : 8) : 18
+            return model.geometry.hasHardwareNotch ? (isActiveState ? 12 : 8) : 18
         case .dynamicIsland:
-            return isActiveState ? 34 : (model.geometry.hasHardwareNotch ? 8 : 16)
+            return 34
         }
     }
 
@@ -310,19 +390,35 @@ public struct NotchHUDView: View {
         ZStack(alignment: .top) {
             Color.clear
 
-            hudContainer
-                .frame(width: hudWidth, height: hudHeight)
-                .modifier(FaceIDShakeEffect(trigger: shakeTrigger))
-                .opacity(isVisuallyVisible ? 1 : 0)
-                .scaleEffect(isVisuallyVisible || model.geometry.hasHardwareNotch ? 1.0 : 0.84, anchor: .top)
-                .animation(.spring(response: 0.44, dampingFraction: 0.84), value: model.state)
-                .animation(.spring(response: 0.38, dampingFraction: 0.84), value: model.style)
+            if model.style == .dynamicIsland {
+                dynamicIslandLiquidContainer
+                    .modifier(FaceIDShakeEffect(trigger: shakeTrigger))
+                    .animation(
+                        isActiveState
+                            ? .spring(response: 0.40, dampingFraction: 1.0)
+                            : .timingCurve(0.42, 0.0, 0.18, 1.0, duration: 0.42),
+                        value: model.state
+                    )
+            } else {
+                hudContainer
+                    .frame(width: hudWidth, height: hudHeight, alignment: .top)
+                    .modifier(FaceIDShakeEffect(trigger: shakeTrigger))
+                    .opacity(isVisuallyVisible ? 1.0 : 0.0)
+                    .scaleEffect(isVisuallyVisible || model.geometry.hasHardwareNotch ? 1.0 : 0.88, anchor: .top)
+                    .animation(
+                        isVisuallyVisible
+                            ? .spring(response: 0.34, dampingFraction: 1.0)
+                            : .timingCurve(0.4, 0.0, 0.2, 1.0, duration: 0.26),
+                        value: model.state
+                    )
+            }
         }
         .frame(
             width: NotchHUDGeometry.defaultPanelSize.width,
             height: NotchHUDGeometry.defaultPanelSize.height,
             alignment: .top
         )
+        .clipped()
         .onChange(of: model.state) { newState in
             switch newState {
             case .unlocked:
@@ -351,6 +447,24 @@ public struct NotchHUDView: View {
         }
     }
 
+    private var dynamicIslandLiquidContainer: some View {
+        let shape = DynamicIslandLiquidShape(
+            progress: isActiveState ? 1.0 : 0.0,
+            baseWidth: model.geometry.notchWidth,
+            baseHeight: model.geometry.notchHeight,
+            expandedWidth: hudWidth,
+            expandedHeight: hudHeight,
+            hasHardwareNotch: model.geometry.hasHardwareNotch
+        )
+        return ZStack(alignment: .top) {
+            shape.fill(Color.black)
+            dynamicIslandContent
+                .frame(width: hudWidth, height: hudHeight, alignment: .top)
+        }
+        .frame(width: hudWidth, height: hudHeight, alignment: .top)
+        .clipShape(shape)
+    }
+
     @ViewBuilder
     private var hudContainer: some View {
         if model.geometry.hasHardwareNotch {
@@ -358,17 +472,13 @@ public struct NotchHUDView: View {
                 topEarRadius: topEarRadius,
                 bottomRadius: bottomCornerRadius
             )
-            // Pure matte black (#000000) with clipShape so inner icons retract seamlessly inside the notch.
+            // Pure matte black (#000000) with clipShape and no drop shadow so zero ghost box appears near the notch.
             ZStack(alignment: .top) {
                 shape.fill(Color.black)
                 activeStyleContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
             .clipShape(shape)
-            .shadow(
-                color: (model.style == .dynamicIsland && isActiveState) ? .black.opacity(0.38) : .clear,
-                radius: 12,
-                y: 5
-            )
         } else {
             let shape = RoundedRectangle(cornerRadius: bottomCornerRadius, style: .continuous)
             ZStack(alignment: .top) {
@@ -394,7 +504,7 @@ public struct NotchHUDView: View {
 
     @ViewBuilder
     private var notchWingsContent: some View {
-        if isVisible {
+        if isActiveState {
             HStack(spacing: 0) {
                 // Left wing: Padlock icon
                 wingLockIcon

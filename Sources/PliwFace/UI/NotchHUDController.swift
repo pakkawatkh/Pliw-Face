@@ -188,14 +188,29 @@ public final class NotchHUDController {
             return
         }
 
-        // If user unlocked the Lock Screen externally (e.g. Touch ID) while Face ID was scanning,
-        // smoothly complete with a Touch ID unlock confirmation instead of snapping away.
+        // Handle external Lock Screen unlock (e.g. Touch ID or password):
+        // - If Face ID was actively scanning, complete cleanly with a Touch ID unlock confirmation.
+        // - If Face ID had already failed/timed out (.rejected / .lockedIdle), retract Notch Wings immediately!
         let unlockedExternally = wasScreenLocked && !isScreenLocked
         wasScreenLocked = isScreenLocked
-        if unlockedExternally, case .scanning(_, _, .faceID) = model.state {
-            isHoldingFeedback = true
-            presentState(.unlocked(identityName: "Touch ID", latencyMs: 0, kind: .touchID))
-            scheduleRetract(after: 0.75)
+        if unlockedExternally {
+            if case .scanning(_, _, .faceID) = model.state {
+                isHoldingFeedback = true
+                presentState(.unlocked(identityName: "Touch ID", latencyMs: 0, kind: .touchID))
+                scheduleRetract(after: 0.75)
+                return
+            } else if !model.state.isHidden {
+                isHoldingFeedback = false
+                previewTask?.cancel()
+                previewTask = nil
+                retractImmediately()
+                return
+            }
+        }
+
+        // Defensive guard: never leave Standby (.lockedIdle) stuck visible after the screen is unlocked
+        if !isScreenLocked && !isTouchIDPromptActive && previewTask == nil && model.state == .lockedIdle {
+            retractImmediately()
             return
         }
 
@@ -294,7 +309,7 @@ public final class NotchHUDController {
         panel?.ignoresMouseEvents = true
         retractTask?.cancel()
         retractTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 540_000_000)
+            try? await Task.sleep(nanoseconds: 460_000_000)
             guard !Task.isCancelled, let self, self.model.state.isHidden else { return }
             self.panel?.orderOut(nil)
         }

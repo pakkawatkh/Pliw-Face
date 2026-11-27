@@ -3,6 +3,17 @@ import CoreGraphics
 import CoreVideo
 import Foundation
 
+public struct FaceMatchResult: Sendable {
+    public let identity: FaceIdentity
+    public let bestTemplateScore: Float
+    public let centroidScore: Float
+
+    /// Weighted consensus score combining peak template match (75%) and identity centroid consistency (25%).
+    public var consensusScore: Float {
+        0.75 * bestTemplateScore + 0.25 * centroidScore
+    }
+}
+
 /// Accelerate (`vDSP`) vectorized linear algebra and luma statistics for sub-millisecond matching & liveness.
 public enum VectorMath {
 
@@ -28,33 +39,76 @@ public enum VectorMath {
         return dot
     }
 
-    /// Finds the highest-scoring enabled identity matching `query` (must already be L2-normalized).
-    public nonisolated static func bestMatch(
+    /// Computes the L2-normalized centroid (mean direction) of an identity's enrolled templates via `vDSP`.
+    public nonisolated static func computeCentroid(
+        of templates: [EnrolledFaceTemplate],
+        dimension: Int
+    ) -> [Float]? {
+        guard dimension > 0 else { return nil }
+        var sum = [Float](repeating: 0, count: dimension)
+        var count = 0
+        for template in templates where template.vector.count == dimension {
+            vDSP_vadd(sum, 1, template.vector, 1, &sum, 1, vDSP_Length(dimension))
+            count += 1
+        }
+        guard count > 0 else { return nil }
+        return l2Normalize(sum)
+    }
+
+    /// Finds the highest-scoring enabled identity along with its centroid consistency score.
+    public nonisolated static func bestVerifiedMatch(
         query: [Float],
         identities: [FaceIdentity],
         modelIdentifier: String
-    ) -> (identity: FaceIdentity, score: Float)? {
-        var bestIdentity: FaceIdentity?
-        var bestScore: Float = -1
+    ) -> FaceMatchResult? {
+        var bestResult: FaceMatchResult?
 
         for identity in identities where identity.isEnabled {
             guard identity.modelIdentifier == modelIdentifier,
                   identity.embeddingDimension == query.count else {
                 continue
             }
+            var peakScore: Float = -1
             for template in identity.templates where template.vector.count == query.count {
                 let score = cosineSimilarity(query, template.vector)
-                if score > bestScore {
-                    bestScore = score
-                    bestIdentity = identity
+                if score > peakScore {
+                    peakScore = score
                 }
+            }
+            guard peakScore > -1 else { continue }
+            let centroidScore: Float
+            if let centroid = computeCentroid(of: identity.templates, dimension: query.count) {
+                centroidScore = cosineSimilarity(query, centroid)
+            } else {
+                centroidScore = peakScore
+            }
+            let candidate = FaceMatchResult(
+                identity: identity,
+                bestTemplateScore: peakScore,
+                centroidScore: centroidScore
+            )
+            if bestResult == nil || candidate.consensusScore > bestResult!.consensusScore {
+                bestResult = candidate
             }
         }
 
-        if let bestIdentity {
-            return (bestIdentity, bestScore)
+        return bestResult
+    }
+
+    /// Finds the highest-scoring enabled identity matching `query` (must already be L2-normalized).
+    public nonisolated static func bestMatch(
+        query: [Float],
+        identities: [FaceIdentity],
+        modelIdentifier: String
+    ) -> (identity: FaceIdentity, score: Float)? {
+        guard let verified = bestVerifiedMatch(
+            query: query,
+            identities: identities,
+            modelIdentifier: modelIdentifier
+        ) else {
+            return nil
         }
-        return nil
+        return (verified.identity, verified.bestTemplateScore)
     }
 
     /// Computes the fraction of clipped specular highlight pixels (luma >= 248) inside the normalized Vision face box

@@ -28,6 +28,11 @@ cp "${RELEASE_BIN}" "${MACOS_DIR}/pliw-face"
 strip "${MACOS_DIR}/pliw-face"
 chmod +x "${MACOS_DIR}/pliw-face"
 
+# Copy macOS App Icon if present
+if [ -f "${PROJECT_DIR}/Resources/AppIcon.icns" ]; then
+    cp "${PROJECT_DIR}/Resources/AppIcon.icns" "${RESOURCES_DIR}/AppIcon.icns"
+fi
+
 # Compile quantized FP16 ArcFace Core ML model into app bundle Resources
 MLPACKAGE="${PROJECT_DIR}/Resources/ArcFaceFP16.mlpackage"
 if [ -d "${MLPACKAGE}" ]; then
@@ -48,6 +53,8 @@ cat << 'EOF' > "${CONTENTS_DIR}/Info.plist"
     <string>Pliw Face</string>
     <key>CFBundleDisplayName</key>
     <string>Pliw Face</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -109,6 +116,8 @@ if [ -z "${SKIP_INSTALL}" ]; then
     pkill -9 -x "pliw-face" || true
     rm -rf "/Applications/Pliw Face.app"
     cp -R "${APP_DIR}" "/Applications/Pliw Face.app"
+    touch "/Applications/Pliw Face.app"
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/Pliw Face.app" >/dev/null 2>&1 || true
     echo "🎉 Updated /Applications/Pliw Face.app"
 else
     echo "⏭️ Skipping install to /Applications because SKIP_INSTALL is set."
