@@ -4,9 +4,9 @@ import CryptoKit
 import Foundation
 import XCTest
 import simd
-@testable import TiffyFace
+@testable import PliwFace
 
-final class TiffyFaceTests: XCTestCase {
+final class PliwFaceTests: XCTestCase {
 
     // MARK: - 1. VectorMath (Accelerate vDSP)
 
@@ -123,7 +123,7 @@ final class TiffyFaceTests: XCTestCase {
     // MARK: - 4. AES-256-GCM Session Crypto Vault & Encrypted Face Store
 
     func testAES256GCMVaultAndEncryptedIdentityStoreRoundTrip() throws {
-        let vault = SessionCryptoVault(service: "com.local.tiffy-face.unit-test.\(UUID().uuidString)")
+        let vault = SessionCryptoVault(service: "com.local.pliw-face.unit-test.\(UUID().uuidString)")
         XCTAssertFalse(vault.isSessionArmed)
 
         // Sealing while disarmed must fail closed
@@ -140,7 +140,7 @@ final class TiffyFaceTests: XCTestCase {
 
         // Encrypted FaceIdentityStore round-trip
         let tempFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("tiffy-face-identities-\(UUID().uuidString).enc")
+            .appendingPathComponent("pliw-face-identities-\(UUID().uuidString).enc")
         defer { try? FileManager.default.removeItem(at: tempFile) }
 
         let store = FaceIdentityStore(fileURL: tempFile, vault: vault)
@@ -167,7 +167,7 @@ final class TiffyFaceTests: XCTestCase {
     }
 
     func testKeychainVaultLiveSaveReadDeleteWithoutEntitlementError() throws {
-        let testService = "com.local.tiffy-face.keychain-test.\(UUID().uuidString)"
+        let testService = "com.local.pliw-face.keychain-test.\(UUID().uuidString)"
         let account = "test_aes_key"
         defer { try? KeychainVault.delete(account: account, service: testService) }
 
@@ -197,7 +197,7 @@ final class TiffyFaceTests: XCTestCase {
     // MARK: - 6. Live ArcFace FP16 Core ML Neural Engine Inference Benchmark
 
     func testLiveArcFaceFP16CoreMLInferenceAndLatency() throws {
-        let modelURL = URL(fileURLWithPath: "/Users/bxxs/workspace/github/tools/tiffy-face/Resources/ArcFaceFP16.mlpackage")
+        let modelURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/ArcFaceFP16.mlpackage")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: modelURL.path), "ArcFaceFP16.mlpackage not present")
 
         let embedder = try ArcFaceFP16Embedder(modelURL: modelURL)
@@ -230,5 +230,150 @@ final class TiffyFaceTests: XCTestCase {
         let avgMs = ((ProcessInfo.processInfo.systemUptime - start) * 1000.0) / 10.0
         print(String(format: "⚡️ ArcFace FP16 steady-state average inference: %.2f ms", avgMs))
         XCTAssertLessThan(avgMs, 40.0, "ArcFace FP16 inference exceeded 40 ms budget: \(avgMs) ms")
+    }
+
+    // MARK: - 7. Notch HUD Geometry & Settings Backward Compatibility
+
+    func testNotchHUDGeometryForNotchedAndNonNotchedDisplays() {
+        let notched = NotchHUDGeometry.compute(
+            screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1512, height: 944),
+            safeTop: 38,
+            leftAuxWidth: 660,
+            rightAuxWidth: 660
+        )
+        XCTAssertTrue(notched.hasHardwareNotch)
+        XCTAssertEqual(notched.notchWidth, 192, accuracy: 0.1)
+        XCTAssertEqual(notched.notchHeight, 38, accuracy: 0.1)
+        XCTAssertEqual(notched.panelFrame.maxY, 982, accuracy: 0.1)
+        XCTAssertEqual(notched.panelFrame.midX, 756, accuracy: 0.1)
+
+        let external = NotchHUDGeometry.compute(
+            screenFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1920, height: 1055),
+            safeTop: 0,
+            leftAuxWidth: 0,
+            rightAuxWidth: 0
+        )
+        XCTAssertFalse(external.hasHardwareNotch)
+        XCTAssertLessThan(external.panelFrame.maxY, 1055)
+        XCTAssertEqual(external.panelFrame.midX, 960, accuracy: 0.1)
+    }
+
+    func testFaceSettingsBackwardCompatibleDecodeDefaultsShowNotchHUDToTrue() throws {
+        let legacyJSON = """
+        {
+          "isEnabled": true,
+          "unlockOnWake": true,
+          "unlockOnLock": false,
+          "unlockOnSpacebar": true,
+          "livenessMode": "balanced",
+          "similarityThreshold": 0.46,
+          "sessionTimeout": 14400,
+          "hapticFeedback": true,
+          "scanTimeoutSeconds": 7.0
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(FaceSettings.self, from: legacyJSON)
+        XCTAssertTrue(decoded.showNotchHUD)
+        XCTAssertEqual(decoded.hudStyle, .notchWings)
+        XCTAssertTrue(decoded.unlockOnNotchHover)
+        XCTAssertTrue(decoded.autoArmOnLaunch)
+    }
+
+    func testNineAngleEnrollmentPoses() {
+        XCTAssertEqual(EnrollmentPose.allCases.count, 9)
+        XCTAssertEqual(Set(EnrollmentPose.allCases.map(\.rawValue)).count, 9)
+    }
+
+    func testAutoArmFromKeychainIfAvailableLoadsStoredKey() throws {
+        let testService = "com.local.pliw-face.autoarm-test.\(UUID().uuidString)"
+        let vault = SessionCryptoVault(service: testService)
+        defer { try? vault.deleteAllCredentials() }
+
+        // No key stored yet -> returns false
+        XCTAssertFalse(vault.autoArmFromKeychainIfAvailable())
+
+        // Save a key directly via KeychainVault as armSession() does on first setup
+        let key = SymmetricKey(size: .bits256)
+        let keyBytes = key.withUnsafeBytes { Data($0) }
+        try KeychainVault.save(account: "session_aes256_key", data: keyBytes, service: testService)
+
+        // Fresh vault instance (simulating app relaunch) should auto-arm silently
+        let relaunchedVault = SessionCryptoVault(service: testService)
+        XCTAssertFalse(relaunchedVault.isSessionArmed)
+        XCTAssertTrue(relaunchedVault.autoArmFromKeychainIfAvailable())
+        XCTAssertTrue(relaunchedVault.isSessionArmed)
+
+        // Verify sealed data round-trips with the auto-armed key
+        let sealed = try relaunchedVault.seal(Data("hello-pliw".utf8))
+        let opened = try relaunchedVault.open(sealed)
+        XCTAssertEqual(String(data: opened, encoding: .utf8), "hello-pliw")
+    }
+
+    func testNotchHoverTriggerHitZoneGeometry() {
+        let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        // Inside top-center notch
+        XCTAssertTrue(
+            NotchHoverTrigger.isPointInsideNotchZone(
+                pointQuartz: CGPoint(x: 756, y: 18),
+                screenFrame: screen,
+                safeTop: 38,
+                leftAuxWidth: 660,
+                rightAuxWidth: 660
+            )
+        )
+        // Outside (far left menu bar)
+        XCTAssertFalse(
+            NotchHoverTrigger.isPointInsideNotchZone(
+                pointQuartz: CGPoint(x: 120, y: 18),
+                screenFrame: screen,
+                safeTop: 38,
+                leftAuxWidth: 660,
+                rightAuxWidth: 660
+            )
+        )
+        // Converted AppKit bottom-left coordinate near top center of screen
+        let converted = NotchHoverTrigger.convertAppKitToQuartz(
+            pointAppKit: CGPoint(x: 756, y: 970),
+            screenFrame: screen
+        )
+        XCTAssertTrue(
+            NotchHoverTrigger.isPointInsideNotchZone(
+                pointQuartz: converted,
+                screenFrame: screen,
+                safeTop: 38,
+                leftAuxWidth: 660,
+                rightAuxWidth: 660
+            )
+        )
+        // Below notch hit zone
+        XCTAssertFalse(
+            NotchHoverTrigger.isPointInsideNotchZone(
+                pointQuartz: CGPoint(x: 756, y: 120),
+                screenFrame: screen,
+                safeTop: 38,
+                leftAuxWidth: 660,
+                rightAuxWidth: 660
+            )
+        )
+    }
+
+    @MainActor
+    func testSkyLightOverlaySpaceLoadsSafely() {
+        let overlay = SkyLightOverlaySpace()
+        XCTAssertTrue(overlay.isAvailable, "SkyLight overlay symbols should resolve on macOS")
+        overlay.teardown()
+    }
+
+    func testSubmitPasswordAbortsAndZeroesBytesWhenScreenIsNotLocked() {
+        var secret = Data("super-secret-pw".utf8)
+        XCTAssertThrowsError(
+            try LockScreenKeystrokeDriver.submitPassword(&secret, isLockedCheck: { false })
+        ) { error in
+            XCTAssertEqual(error as? KeystrokeDriverError, .screenNoLongerLocked)
+        }
+        XCTAssertTrue(secret.allSatisfy { $0 == 0 }, "Password bytes must be zeroed even when aborted")
     }
 }

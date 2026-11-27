@@ -23,9 +23,9 @@ public enum KeychainVaultError: LocalizedError, Equatable, Sendable {
     }
 }
 
-/// Thin, thread-safe Security.framework Keychain wrapper scoped to Tiffy Face.
+/// Thin, thread-safe Security.framework Keychain wrapper scoped to Pliw Face.
 public enum KeychainVault {
-    public static let defaultService = "com.local.tiffy-face"
+    public static let defaultService = "com.local.pliw-face"
 
     public static func makeUserPresenceAccessControl() throws -> SecAccessControl {
         var error: Unmanaged<CFError>?

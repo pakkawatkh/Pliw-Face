@@ -7,6 +7,4 @@
 *.dmg
 *.zip
 *.mlmodelc/
-!docs/*.dmg
-!docs/*.zip
 xcuserdata/

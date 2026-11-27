@@ -9,9 +9,11 @@ public final class StatusBarController: NSObject, NSPopoverDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var outsideClickMonitor: Any?
     private let onOpenSetup: () -> Void
+    private let onPreviewHUD: () -> Void
 
-    public init(onOpenSetup: @escaping () -> Void) {
+    public init(onOpenSetup: @escaping () -> Void, onPreviewHUD: @escaping () -> Void = {}) {
         self.onOpenSetup = onOpenSetup
+        self.onPreviewHUD = onPreviewHUD
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
         super.init()
@@ -58,6 +60,9 @@ public final class StatusBarController: NSObject, NSPopoverDelegate {
                 self?.closePopover()
                 self?.onOpenSetup()
             },
+            onPreviewHUD: { [weak self] in
+                self?.onPreviewHUD()
+            },
             onQuit: { [weak self] in
                 self?.closePopover()
                 NSApplication.shared.terminate(nil)
@@ -94,7 +99,7 @@ public final class StatusBarController: NSObject, NSPopoverDelegate {
         let symbolName = engine.isReadyForLockScreenUnlock ? "faceid" : "faceid"
         let weight: NSFont.Weight = engine.isReadyForLockScreenUnlock ? .bold : .regular
         let config = NSImage.SymbolConfiguration(pointSize: 13.5, weight: weight)
-        let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Tiffy Face")?
+        let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Pliw Face")?
             .withSymbolConfiguration(config)
         img?.isTemplate = true
         button.image = img
@@ -134,7 +139,7 @@ public final class StatusBarController: NSObject, NSPopoverDelegate {
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Quit Tiffy Face", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit Pliw Face", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 

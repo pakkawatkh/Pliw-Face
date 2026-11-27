@@ -4,10 +4,11 @@ import SwiftUI
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusBarController: StatusBarController?
+    private var notchHUDController: NotchHUDController?
     private var setupWindow: NSWindow?
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.local.tiffy-face"
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.local.pliw-face"
         let instances = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
         if instances.count > 1 {
             NSApp.terminate(nil)
@@ -19,10 +20,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         setupMainMenu()
 
         FaceUnlockEngine.shared.startBackgroundMonitoring()
+        notchHUDController = NotchHUDController()
 
-        statusBarController = StatusBarController(onOpenSetup: { [weak self] in
-            self?.showSetupWindow()
-        })
+        statusBarController = StatusBarController(
+            onOpenSetup: { [weak self] in
+                self?.showSetupWindow()
+            },
+            onPreviewHUD: { [weak self] in
+                self?.notchHUDController?.previewAnimation()
+            }
+        )
 
         // Open compact popover briefly right after launch so the user sees it immediately
         Task { @MainActor [weak self] in
@@ -32,11 +39,29 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
+        notchHUDController?.teardown()
         FaceUnlockEngine.shared.stopBackgroundMonitoring()
         SessionCryptoVault.shared.disarmSession()
     }
 
     public func showSetupWindow() {
+        if let existing = setupWindow, existing.isVisible {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            do {
+                try await SessionCryptoVault.shared.authenticateOwner(reason: "Authenticate to open Pliw Face Settings")
+            } catch {
+                return
+            }
+            self?.presentSetupWindowAuthorized()
+        }
+    }
+
+    private func presentSetupWindowAuthorized() {
         if let existing = setupWindow {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -44,21 +69,30 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 570),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 520),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.title = "Tiffy Face — Setup & Face Lab"
+        window.title = "Pliw Face Settings"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(red: 0.07, green: 0.08, blue: 0.11, alpha: 1.0)
+        window.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: 1.0)
         window.isReleasedWhenClosed = false
         window.delegate = self
 
-        window.contentView = NSHostingView(rootView: SetupWindowView())
+        window.contentView = NSHostingView(
+            rootView: SetupWindowView(
+                onPreviewUnlockHUD: { [weak self] in
+                    self?.notchHUDController?.previewAnimation()
+                },
+                onPreviewFailureHUD: { [weak self] in
+                    self?.notchHUDController?.previewFailureAnimation()
+                }
+            )
+        )
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -84,7 +118,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegat
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "Quit Tiffy Face", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit Pliw Face", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
         mainMenu.addItem(appMenuItem)
 

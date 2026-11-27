@@ -8,7 +8,7 @@ import os
 /// even while macOS Secure Event Input suppresses CGEventTap. Zero overhead when unlocked.
 @MainActor
 public final class SpacebarHIDTrigger {
-    private static let log = Logger(subsystem: "com.local.tiffy-face", category: "SpacebarHID")
+    private static let log = Logger(subsystem: "com.local.pliw-face", category: "SpacebarHID")
 
     public var onSpacePressed: (() -> Void)?
 

@@ -2,27 +2,27 @@
 import PackageDescription
 
 let package = Package(
-    name: "tiffy-face",
+    name: "Pliw-face",
     platforms: [
         .macOS(.v13)
     ],
     products: [
         .executable(
-            name: "tiffy-face",
-            targets: ["TiffyFace"]
+            name: "pliw-face",
+            targets: ["PliwFace"]
         )
     ],
     dependencies: [],
     targets: [
         .executableTarget(
-            name: "TiffyFace",
+            name: "PliwFace",
             dependencies: [],
-            path: "Sources/TiffyFace"
+            path: "Sources/PliwFace"
         ),
         .testTarget(
-            name: "TiffyFaceTests",
-            dependencies: ["TiffyFace"],
-            path: "Tests/TiffyFaceTests"
+            name: "PliwFaceTests",
+            dependencies: ["PliwFace"],
+            path: "Tests/PliwFaceTests"
         )
     ]
 )

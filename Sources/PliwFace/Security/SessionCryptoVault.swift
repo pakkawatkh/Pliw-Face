@@ -71,9 +71,33 @@ public final class SessionCryptoVault: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Silently loads an existing 256-bit AES session key from the user's macOS login Keychain on launch.
+    @discardableResult
+    public func autoArmFromKeychainIfAvailable() -> Bool {
+        if isSessionArmed {
+            touchActivity()
+            return true
+        }
+        guard KeychainVault.exists(account: sessionKeyAccount, service: service) else {
+            return false
+        }
+        do {
+            let rawKey = try KeychainVault.read(account: sessionKeyAccount, service: service, context: nil)
+            setCachedKey(SymmetricKey(data: rawKey))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Explicitly verifies Touch ID / device owner authentication before sensitive credential edits.
+    public func authenticateOwner(reason: String) async throws {
+        try await evaluateDeviceOwnerAuth(reason: reason)
+    }
+
     /// Prompts native macOS Touch ID (or device password fallback) once to load/create the 256-bit session key in RAM.
     /// Works reliably on both Apple Developer ID signed builds AND locally self-signed builds (avoids `-34018` entitlement failures).
-    public func armSession(reason: String = "Authorize Tiffy Face unlock session") async throws {
+    public func armSession(reason: String = "Authorize Pliw Face unlock session") async throws {
         if isSessionArmed {
             touchActivity()
             return
@@ -185,6 +209,18 @@ public final class SessionCryptoVault: @unchecked Sendable {
         guard isSessionArmed else { throw SessionVaultError.sessionLocked }
         let sealed = try KeychainVault.read(account: passwordBlobAccount, service: service)
         return try open(sealed)
+    }
+
+    /// Reads and decrypts the stored password purely to trigger/verify macOS Keychain ACL ("Always Allow")
+    /// while unlocked, immediately zeroing plaintext bytes in RAM without typing anything.
+    public func verifyKeychainPasswordAccess() throws {
+        var bytes = try readPassword()
+        defer {
+            if !bytes.isEmpty {
+                bytes.resetBytes(in: 0..<bytes.count)
+            }
+        }
+        guard !bytes.isEmpty else { throw SessionVaultError.emptyPassword }
     }
 
     public func deleteAllCredentials() throws {

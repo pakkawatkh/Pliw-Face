@@ -4,12 +4,18 @@ import SwiftUI
 public struct MenuBarPopoverView: View {
     @ObservedObject var engine: FaceUnlockEngine = .shared
     public let onOpenSetup: () -> Void
+    public let onPreviewHUD: () -> Void
     public let onQuit: () -> Void
 
     @State private var isActionHovered = false
 
-    public init(onOpenSetup: @escaping () -> Void, onQuit: @escaping () -> Void) {
+    public init(
+        onOpenSetup: @escaping () -> Void,
+        onPreviewHUD: @escaping () -> Void = {},
+        onQuit: @escaping () -> Void
+    ) {
         self.onOpenSetup = onOpenSetup
+        self.onPreviewHUD = onPreviewHUD
         self.onQuit = onQuit
     }
 
@@ -70,7 +76,7 @@ public struct MenuBarPopoverView: View {
                 )
 
             VStack(alignment: .leading, spacing: 1) {
-                Text("Tiffy Face")
+                Text("Pliw Face")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(.white)
                 Text(engine.embedder.displayName)
@@ -158,7 +164,7 @@ public struct MenuBarPopoverView: View {
         }
         .buttonStyle(.plain)
         .onHover { isActionHovered = $0 }
-        .accessibilityLabel(engine.isSessionArmed ? "Lock Tiffy Face session" : "Arm Tiffy Face session with Touch ID")
+        .accessibilityLabel(engine.isSessionArmed ? "Lock Pliw Face session" : "Arm Pliw Face session with Touch ID")
     }
 
     private var readinessCard: some View {
@@ -243,6 +249,28 @@ public struct MenuBarPopoverView: View {
                     .controlSize(.mini)
             }
 
+            HStack {
+                Text("Notch HUD")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.82))
+                Spacer()
+                Button("Preview") {
+                    onPreviewHUD()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color(red: 0.30, green: 0.92, blue: 0.80))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(.white.opacity(0.07))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+
+                Toggle("", isOn: $engine.settings.showNotchHUD)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+            }
+
             HStack(spacing: 4) {
                 Text("Liveness")
                     .font(.system(size: 11, weight: .medium))
@@ -316,7 +344,7 @@ public struct MenuBarPopoverView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6.5))
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Quit Tiffy Face")
+            .accessibilityLabel("Quit Pliw Face")
         }
     }
 }

@@ -85,8 +85,8 @@ def convert_to_coreml_fp16(onnx_path: Path, output_path: Path) -> None:
         outputs=[ct.TensorType(name="embedding", dtype=np.float32)],
     )
 
-    mlmodel.short_description = "ArcFace w600k_mbf (FP16) 512-dim face embedder for Tiffy Face"
-    mlmodel.author = "Tiffy Face (converted from InsightFace w600k_mbf)"
+    mlmodel.short_description = "ArcFace w600k_mbf (FP16) 512-dim face embedder for Pliw Face"
+    mlmodel.author = "Pliw Face (converted from InsightFace w600k_mbf)"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
@@ -130,7 +130,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    cache_dir = Path.home() / ".cache" / "tiffy-face"
+    cache_dir = Path.home() / ".cache" / "pliw-face"
     onnx_path = args.onnx_path if args.onnx_path else download_w600k_mbf(cache_dir)
     convert_to_coreml_fp16(onnx_path, args.output)
     return 0

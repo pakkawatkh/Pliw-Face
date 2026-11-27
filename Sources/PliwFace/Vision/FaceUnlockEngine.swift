@@ -56,7 +56,7 @@ private final class FramePipelineGate: @unchecked Sendable {
 @MainActor
 public final class FaceUnlockEngine: ObservableObject {
     public static let shared = FaceUnlockEngine()
-    private static let log = Logger(subsystem: "com.local.tiffy-face", category: "Engine")
+    private static let log = Logger(subsystem: "com.local.pliw-face", category: "Engine")
 
     @Published public var settings: FaceSettings {
         didSet {
@@ -72,10 +72,12 @@ public final class FaceUnlockEngine: ObservableObject {
     @Published public private(set) var cameraAccess: CameraAccessState = .notDetermined
     @Published public private(set) var accessibilityTrusted: Bool = false
     @Published public private(set) var inputMonitoringGranted: Bool = false
+    @Published public private(set) var isKeychainUnlockVerified: Bool = false
     @Published public private(set) var lastUnlockLatencyMs: Int? = nil
     @Published public private(set) var enrollmentCompletedPoses: [EnrollmentPose] = []
     @Published public private(set) var toastMessage: String? = nil
     @Published public private(set) var isToastError: Bool = false
+    @Published public private(set) var isScreenLocked: Bool = false
 
     public let camera = FastCameraCapture()
     public private(set) var embedder: any FaceEmbeddingEngine
@@ -84,10 +86,11 @@ public final class FaceUnlockEngine: ObservableObject {
     private let liveness = StreamingLivenessDetector()
     private let lockMonitor = LockScreenMonitor()
     private let spacebarTrigger = SpacebarHIDTrigger()
+    private let notchHoverTrigger = NotchHoverTrigger()
     private let vault: SessionCryptoVault
     private let identityStore: FaceIdentityStore
 
-    private let pipelineQueue = DispatchQueue(label: "com.local.tiffy-face.pipeline", qos: .userInteractive)
+    private let pipelineQueue = DispatchQueue(label: "com.local.pliw-face.pipeline", qos: .userInteractive)
     private let frameGate = FramePipelineGate()
 
     private var scanStartUptime: TimeInterval = 0
@@ -110,6 +113,10 @@ public final class FaceUnlockEngine: ObservableObject {
         self.settings = FaceSettings.load()
         self.embedder = embedder ?? FaceEmbedderFactory.makeBestAvailable()
         self.telemetry.engineName = self.embedder.displayName
+
+        if self.settings.autoArmOnLaunch, self.vault.autoArmFromKeychainIfAvailable() {
+            startIdleSessionTimer()
+        }
 
         refreshSystemReadiness()
         configureMonitors()
@@ -168,12 +175,38 @@ public final class FaceUnlockEngine: ObservableObject {
         }
     }
 
+    /// Pre-authorizes Keychain password read while unlocked so macOS "Always Allow" never hides behind the Lock Screen.
+    public func verifyAndAuthorizeKeychainAccess() {
+        Task { @MainActor in
+            do {
+                if !vault.isSessionArmed {
+                    try await vault.armSession(reason: "Verify Pliw Face Keychain unlock access")
+                    refreshSystemReadiness()
+                }
+                guard vault.hasStoredPassword() else {
+                    showToast("Save your Mac login password below first", isError: true)
+                    return
+                }
+                try await Task.detached(priority: .userInitiated) { [vault] in
+                    try vault.verifyKeychainPasswordAccess()
+                }.value
+                isKeychainUnlockVerified = true
+                showToast("Keychain authorized — Lock Screen auto-fill ready!", isError: false)
+            } catch SessionVaultError.authenticationCancelled {
+                showToast("Touch ID cancelled", isError: false)
+            } catch {
+                isKeychainUnlockVerified = false
+                showToast("Keychain check failed: \(error.localizedDescription)", isError: true)
+            }
+        }
+    }
+
     // MARK: - Session & Credential Lifecycle
 
     public func armSession() {
         Task { @MainActor in
             do {
-                try await vault.armSession(reason: "Authorize Tiffy Face unlock session")
+                try await vault.armSession(reason: "Authorize Pliw Face unlock session")
                 isSessionArmed = vault.isSessionArmed
                 reloadIdentities()
                 startIdleSessionTimer()
@@ -207,6 +240,8 @@ public final class FaceUnlockEngine: ObservableObject {
 
                 if !vault.isSessionArmed {
                     try await vault.armSession(reason: "Encrypt and store Mac login password")
+                } else {
+                    try await vault.authenticateOwner(reason: "Update encrypted Mac login password")
                 }
                 let copy = bytes
                 try await Task.detached(priority: .userInitiated) { [vault] in
@@ -263,8 +298,14 @@ public final class FaceUnlockEngine: ObservableObject {
 
     public func startBackgroundMonitoring() {
         lockMonitor.start()
-        if LockScreenMonitor.isScreenActuallyLocked() && settings.unlockOnSpacebar {
-            spacebarTrigger.startListening()
+        isScreenLocked = LockScreenMonitor.isScreenActuallyLocked()
+        if isScreenLocked {
+            if settings.unlockOnSpacebar {
+                spacebarTrigger.startListening()
+            }
+            if settings.unlockOnNotchHover {
+                notchHoverTrigger.startListening()
+            }
         }
     }
 
@@ -272,6 +313,8 @@ public final class FaceUnlockEngine: ObservableObject {
         stopAnyActiveScan()
         lockMonitor.stop()
         spacebarTrigger.stopListening()
+        notchHoverTrigger.stopListening()
+        isScreenLocked = false
         stopIdleSessionTimer()
     }
 
@@ -282,6 +325,9 @@ public final class FaceUnlockEngine: ObservableObject {
         spacebarTrigger.onSpacePressed = { [weak self] in
             self?.handleSpacebarWhileLocked()
         }
+        notchHoverTrigger.onNotchHovered = { [weak self] in
+            self?.handleNotchHoverWhileLocked()
+        }
     }
 
     private func handleLockEvent(_ event: LockEvent) {
@@ -289,8 +335,10 @@ public final class FaceUnlockEngine: ObservableObject {
         case .willSleep:
             stopAnyActiveScan()
             spacebarTrigger.stopListening()
+            notchHoverTrigger.stopListening()
 
         case .locked:
+            isScreenLocked = true
             if settings.unlockOnSpacebar {
                 spacebarTrigger.startListening()
                 if !spacebarTrigger.isListening {
@@ -301,6 +349,9 @@ public final class FaceUnlockEngine: ObservableObject {
                     }
                 }
             }
+            if settings.unlockOnNotchHover {
+                notchHoverTrigger.startListening()
+            }
             guard settings.unlockOnLock, !lockMonitor.isSleeping else { return }
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -308,9 +359,14 @@ public final class FaceUnlockEngine: ObservableObject {
             }
 
         case .wokeUp:
-            if LockScreenMonitor.isScreenActuallyLocked() {
+            let locked = LockScreenMonitor.isScreenActuallyLocked()
+            isScreenLocked = locked
+            if locked {
                 if settings.unlockOnSpacebar {
                     spacebarTrigger.startListening()
+                }
+                if settings.unlockOnNotchHover {
+                    notchHoverTrigger.startListening()
                 }
                 if settings.unlockOnWake {
                     Task { @MainActor [weak self] in
@@ -321,7 +377,9 @@ public final class FaceUnlockEngine: ObservableObject {
             }
 
         case .unlocked:
+            isScreenLocked = false
             spacebarTrigger.stopListening()
+            notchHoverTrigger.stopListening()
             if runMode == .lockScreenUnlock {
                 stopAnyActiveScan()
             }
@@ -332,6 +390,16 @@ public final class FaceUnlockEngine: ObservableObject {
         let locked = LockScreenMonitor.isScreenActuallyLocked()
         Self.log.info("Spacebar callback: unlockOnSpacebar=\(self.settings.unlockOnSpacebar) locked=\(locked) armed=\(self.isSessionArmed)")
         guard settings.unlockOnSpacebar, locked else { return }
+        triggerLockScreenScanIfEligible(manualTrigger: true)
+    }
+
+    public func handleNotchHoverWhileLocked() {
+        let locked = LockScreenMonitor.isScreenActuallyLocked()
+        guard settings.unlockOnNotchHover, locked, runMode == .idle else { return }
+        Self.log.info("Notch hover callback — triggering Lock Screen rescan")
+        if settings.hapticFeedback {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
         triggerLockScreenScanIfEligible(manualTrigger: true)
     }
 
@@ -398,7 +466,7 @@ public final class FaceUnlockEngine: ObservableObject {
 
             if !vault.isSessionArmed {
                 do {
-                    try await vault.armSession(reason: "Authorize Tiffy Face enrollment")
+                    try await vault.armSession(reason: "Authorize Pliw Face enrollment")
                     refreshSystemReadiness()
                     startIdleSessionTimer()
                 } catch SessionVaultError.authenticationCancelled {
@@ -685,7 +753,7 @@ public final class FaceUnlockEngine: ObservableObject {
 
         // Require usable frame quality and a brief pause between poses so the user naturally shifts angle
         let now = ProcessInfo.processInfo.systemUptime
-        guard quality >= 0.16, now - lastEnrollmentCaptureUptime >= 0.75 else { return }
+        guard quality >= 0.16, now - lastEnrollmentCaptureUptime >= 0.55 else { return }
 
         let pose = allPoses[poseIndex]
         enrollmentTemplates.append(EnrolledFaceTemplate(pose: pose, vector: vector, qualityScore: quality))
@@ -712,7 +780,7 @@ public final class FaceUnlockEngine: ObservableObject {
             do {
                 try identityStore.save(identities)
                 stopAnyActiveScan()
-                showToast("Enrolled \"\(name)\" (5 angles encrypted)", isError: false)
+                showToast("Enrolled \"\(name)\" (\(enrollmentTemplates.count) angles encrypted)", isError: false)
             } catch {
                 stopAnyActiveScan()
                 showToast("Failed to save face identity: \(error.localizedDescription)", isError: true)
@@ -757,6 +825,12 @@ public final class FaceUnlockEngine: ObservableObject {
         Task.detached(priority: .userInitiated) { [vault] in
             do {
                 var passwordBytes = try vault.readPassword()
+                guard LockScreenMonitor.isScreenActuallyLocked() else {
+                    if !passwordBytes.isEmpty {
+                        passwordBytes.resetBytes(in: 0..<passwordBytes.count)
+                    }
+                    return
+                }
                 try LockScreenKeystrokeDriver.submitPassword(&passwordBytes)
                 await MainActor.run { [weak self] in
                     self?.lastUnlockLatencyMs = latencyMs
@@ -765,6 +839,9 @@ public final class FaceUnlockEngine: ObservableObject {
                         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
                     }
                 }
+            } catch KeystrokeDriverError.screenNoLongerLocked {
+                // Screen unlocked concurrently (e.g. Touch ID / Apple Watch); silently abort
+                return
             } catch {
                 await MainActor.run { [weak self] in
                     self?.phase = .failed(error.localizedDescription)

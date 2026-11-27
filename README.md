@@ -1,4 +1,4 @@
-# Tiffy Face
+# Pliw Face
 
 Ultra-fast, on-device macOS Face Unlock utility built from scratch in Swift 5.9, SwiftUI, Apple Vision, Accelerate (`vDSP` / `vImage`), and quantized FP16 ArcFace Core ML.
 

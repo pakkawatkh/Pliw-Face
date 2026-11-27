@@ -6,6 +6,10 @@ public enum EnrollmentPose: String, CaseIterable, Codable, Identifiable, Sendabl
     case slightRight
     case slightUp
     case slightDown
+    case upLeft
+    case upRight
+    case downLeft
+    case downRight
 
     public var id: String { rawValue }
 
@@ -16,6 +20,10 @@ public enum EnrollmentPose: String, CaseIterable, Codable, Identifiable, Sendabl
         case .slightRight: return "Turn your head slightly right"
         case .slightUp: return "Tilt your chin slightly up"
         case .slightDown: return "Tilt your chin slightly down"
+        case .upLeft: return "Look slightly up and left"
+        case .upRight: return "Look slightly up and right"
+        case .downLeft: return "Look slightly down and left"
+        case .downRight: return "Look slightly down and right"
         }
     }
 
@@ -26,6 +34,10 @@ public enum EnrollmentPose: String, CaseIterable, Codable, Identifiable, Sendabl
         case .slightRight: return "Right"
         case .slightUp: return "Up"
         case .slightDown: return "Down"
+        case .upLeft: return "Up-Left"
+        case .upRight: return "Up-Right"
+        case .downLeft: return "Down-Left"
+        case .downRight: return "Down-Right"
         }
     }
 }

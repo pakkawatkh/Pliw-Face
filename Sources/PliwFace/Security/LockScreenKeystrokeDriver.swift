@@ -6,6 +6,7 @@ public enum KeystrokeDriverError: LocalizedError, Equatable, Sendable {
     case accessibilityDenied
     case invalidUTF8Password
     case eventCreationFailed
+    case screenNoLongerLocked
 
     public var errorDescription: String? {
         switch self {
@@ -15,6 +16,8 @@ public enum KeystrokeDriverError: LocalizedError, Equatable, Sendable {
             return "Stored password could not be decoded as UTF-8."
         case .eventCreationFailed:
             return "Unable to synthesize keyboard event."
+        case .screenNoLongerLocked:
+            return "Screen is no longer locked; aborted password injection."
         }
     }
 }
@@ -54,14 +57,21 @@ public enum LockScreenKeystrokeDriver {
     }
 
     /// Clears stray characters in the focused password field, types the password in UTF-16 batches, and presses Return.
+    /// Continuously verifies the screen is still locked before every keystroke phase to prevent leaking into unlocked apps.
     /// Zeroes `passwordBytes` in-place via `defer` before returning.
-    public nonisolated static func submitPassword(_ passwordBytes: inout Data) throws {
+    public nonisolated static func submitPassword(
+        _ passwordBytes: inout Data,
+        isLockedCheck: @Sendable () -> Bool = { LockScreenMonitor.isScreenActuallyLocked() }
+    ) throws {
         defer {
             if !passwordBytes.isEmpty {
                 passwordBytes.resetBytes(in: 0..<passwordBytes.count)
             }
         }
 
+        guard isLockedCheck() else {
+            throw KeystrokeDriverError.screenNoLongerLocked
+        }
         guard isAccessibilityTrusted() else {
             throw KeystrokeDriverError.accessibilityDenied
         }
@@ -72,10 +82,20 @@ public enum LockScreenKeystrokeDriver {
         let source = CGEventSource(stateID: .hidSystemState)
         try clearField(source: source)
 
+        guard isLockedCheck() else {
+            throw KeystrokeDriverError.screenNoLongerLocked
+        }
+
         for var chunk in splitUTF16Safely(decoded) {
+            guard isLockedCheck() else {
+                throw KeystrokeDriverError.screenNoLongerLocked
+            }
             try postUnicodeChunk(&chunk, source: source)
         }
 
+        guard isLockedCheck() else {
+            throw KeystrokeDriverError.screenNoLongerLocked
+        }
         try postVirtualKey(0x24, flags: [], source: source) // Return
     }
 

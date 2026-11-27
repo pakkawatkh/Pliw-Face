@@ -15,7 +15,7 @@ public final class FaceIdentityStore: @unchecked Sendable {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                 ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
             self.fileURL = appSupport
-                .appendingPathComponent("TiffyFace", isDirectory: true)
+                .appendingPathComponent("PliwFace", isDirectory: true)
                 .appendingPathComponent("identities.enc")
         }
     }

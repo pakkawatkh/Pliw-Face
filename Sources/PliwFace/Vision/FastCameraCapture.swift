@@ -14,8 +14,8 @@ public enum CameraAccessState: Equatable, Sendable {
 /// Completely tears down the AVCaptureSession when idle so background CPU and camera LED usage stay strictly zero.
 public final class FastCameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     public let session = AVCaptureSession()
-    private let sessionQueue = DispatchQueue(label: "com.local.tiffy-face.camera.session", qos: .userInteractive)
-    private let frameQueue = DispatchQueue(label: "com.local.tiffy-face.camera.frames", qos: .userInteractive)
+    private let sessionQueue = DispatchQueue(label: "com.local.pliw-face.camera.session", qos: .userInteractive)
+    private let frameQueue = DispatchQueue(label: "com.local.pliw-face.camera.frames", qos: .userInteractive)
 
     private var isConfigured = false
     private let callbackLock = NSLock()
