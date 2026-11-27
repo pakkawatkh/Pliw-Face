@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "Pliw-face",
+    name: "Pliw-Face",
     platforms: [
         .macOS(.v13)
     ],
